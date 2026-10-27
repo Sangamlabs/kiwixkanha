@@ -269,5 +269,5 @@ Distributed under the **GNU General Public License v3.0**. See the [`LICENSE`](.
 </p>
 
 <p align="center">
-  <b>Developed & Maintained with ❤️ by <a href="https://github.com/Oyekanhaa">Kanha</a></b>
+  <b>Developed & Maintained with ❤️ by <a href="https://github.com/Sangamlabs">Sangamlabs</a></b>
 </p>
