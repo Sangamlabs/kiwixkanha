@@ -500,9 +500,17 @@ func playTracksAndRespond(
 
 	for i, track := range tracks {
 		track.Requester = mention
+		track.RequesterID = m.SenderID()
+		if sender, _ := m.GetUser(c); sender != nil {
+			track.RequesterName = strings.TrimSpace(sender.FirstName + " " + sender.LastName)
+		}
 
 		filePath := ""
 		if i == 0 && (!isActive || force) {
+			// Start background image preparation concurrently while the song is downloading
+			sender, _ := m.GetUser(c)
+			StartNowPlayingPreparation(context.Background(), c, chatID, track, sender)
+
 			path, err := downloadFirstTrack(c, replyMsg, chatID, mention, track)
 			if err != nil {
 				return nil

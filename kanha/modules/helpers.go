@@ -18,6 +18,7 @@
 package modules
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -81,6 +82,8 @@ func nowPlayingText(chatID int64, t *state.Track) string {
 // sendNowPlaying sends or edits the "now playing" playback message for the
 // given track, honoring the thumbnail/artwork setting, and returns the
 // resulting message.
+// It attempts to send the custom Kiwi Music Now Playing image first, with
+// automatic and complete fallback to showTrackMessage.
 func sendNowPlaying(
 	c *td.Client,
 	statusMsg *td.Message,
@@ -88,7 +91,112 @@ func sendNowPlaying(
 	r *core.RoomState,
 	t *state.Track,
 ) *td.Message {
-	return showTrackMessage(c, statusMsg, chatID, r, t, nowPlayingText(chatID, t), false)
+	if t == nil {
+		return showTrackMessage(c, statusMsg, chatID, r, t, "", false)
+	}
+
+	msgText := nowPlayingText(chatID, t)
+
+	// If thumbnails are disabled via /nothumb, respect the setting and use fallback (text-only)
+	if !shouldShowThumb(chatID) {
+		return showTrackMessage(c, statusMsg, chatID, r, t, msgText, false)
+	}
+
+	// Try custom Kiwi Music Now Playing thumbnail
+	if customMsg := trySendCustomNowPlaying(c, statusMsg, chatID, r, t, msgText); customMsg != nil {
+		return customMsg
+	}
+
+	// Reliable fallback to the existing Now Playing implementation
+	return showTrackMessage(c, statusMsg, chatID, r, t, msgText, false)
+}
+
+// trySendCustomNowPlaying attempts to obtain the generated custom image (either from
+// an active parallel preparation task or on-demand) and send/edit it as a photo message.
+// If any step fails, it returns nil so sendNowPlaying falls back seamlessly.
+func trySendCustomNowPlaying(
+	c *td.Client,
+	statusMsg *td.Message,
+	chatID int64,
+	r *core.RoomState,
+	t *state.Track,
+	msgText string,
+) *td.Message {
+	var imagePath string
+	var err error
+
+	// 1. Check if a parallel task was already started
+	if task := GetActiveNowPlayingTask(chatID, t.ID); task != nil {
+		imagePath, err = task.Wait(2 * time.Second)
+		if err != nil {
+			logger.Debugf("[NowPlaying] Parallel task error/timeout for track %s: %v; falling back", t.ID, err)
+		}
+	}
+
+	// 2. If no active task or task returned empty, attempt on-demand generation
+	if imagePath == "" {
+		data := NowPlayingData{
+			SongTitle:     t.Title,
+			RequesterName: t.RequesterName,
+			RequesterID:   t.RequesterID,
+			ArtworkURL:    t.Artwork,
+			Duration:      t.Duration,
+			TrackID:       t.ID,
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		imagePath, err = GenerateNowPlayingImage(ctx, c, data)
+		cancel()
+		if err != nil {
+			logger.Debugf("[NowPlaying] Custom image generation failed for track %s: %v; falling back", t.ID, err)
+			return nil
+		}
+	}
+
+	if imagePath == "" {
+		return nil
+	}
+
+	markup := core.GetPlayMarkup(chatID, r, false)
+
+	// 3. Try editing existing status message with the new local photo
+	if statusMsg != nil {
+		content := &td.InputMessagePhoto{
+			Photo: &td.InputPhoto{
+				Photo: &td.InputFileLocal{Path: imagePath},
+			},
+		}
+		if caption, err := c.GetFormattedText(msgText, nil, "HTML"); err == nil {
+			content.Caption = caption
+			m, err := c.EditMessageMedia(
+				chatID,
+				content,
+				statusMsg.Id,
+				&td.EditMessageMediaOpts{ReplyMarkup: markup},
+			)
+			if err == nil && m != nil {
+				return m
+			}
+			logger.Debugf("[NowPlaying] EditMessageMedia failed: %v, attempting SendPhoto", err)
+		}
+		_ = statusMsg.Delete(c, true)
+	}
+
+	// 4. Send as new photo
+	photo, err := c.SendPhoto(
+		chatID,
+		&td.InputFileLocal{Path: imagePath},
+		&td.SendPhotoOpts{
+			Caption:     msgText,
+			ParseMode:   "HTML",
+			ReplyMarkup: markup,
+		},
+	)
+	if err != nil {
+		logger.Warnf("[NowPlaying] SendPhoto with custom image failed: %v; will use old fallback", err)
+		return nil
+	}
+
+	return photo
 }
 
 // showTrackMessage sends or edits a track message with optional artwork,
