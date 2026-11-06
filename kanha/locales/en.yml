@@ -1018,7 +1018,7 @@ speed_reset_success: "{emoji:✅} ᴘʟᴧʏʙᴧᴄᴋ sᴘєєᴅ ʀєsєᴛ �
 
 speed_set: "{emoji:🚀} ᴘʟᴧʏʙᴧᴄᴋ sᴘєєᴅ sєᴛ ᴛσ <b>{speed}x</b> ʙʏ {user}."
 
-start_private: "<blockquote><b>sᴧʟᴜᴛᴧᴛɪσɴs</b> {user},</blockquote>\n<blockquote expandable><b>✧ ᴡᴇʟᴄσᴍᴇ ᴛσ {bot} — ᴧ ᴘσᴡᴇʀғᴜʟ ᴧɴᴅ ʜɪɢʜ-sᴘᴇᴇᴅ ᴛɢ ᴍᴜsɪᴄ ʙσᴛ</b>\n<b>✧ ʙᴜɪʟᴛ ғσʀ sᴍσσᴛʜ • sᴛᴧʙʟᴇ • ʟᴧɢ-ғʀᴇᴇ ᴍᴜsɪᴄ sᴛʀᴇᴧᴍɪɴɢ</b>\n<b>✧ ᴘσᴡᴇʀᴇᴅ ʙʏ ᴧɴ σᴘᴛɪᴍɪᴢᴇᴅ ʏσᴜᴛᴜʙᴇ ᴧᴘɪ ғσʀ ɪɴsᴛᴧɴᴛ ᴘʟᴧʏʙᴧᴄᴋ</b>\n<b>✧ ᴇɴᴊσʏ ʜɪɢʜ ǫᴜᴧʟɪᴛʏ ᴧᴜᴅɪσ ᴡɪᴛʜ sᴇᴧᴍʟᴇss ᴄσɴᴛʀσʟ</b>\n<b>•──────────────•</b>\n<b>✧ ᴜsᴇ ʜᴇʟᴘ ᴛσ ᴠɪᴇᴡ ᴧʟʟ ᴄσᴍᴍᴧɴᴅs ᴧɴᴅ ғᴇᴧᴛᴜʀᴇs</b></blockquote> "
+start_private: start_private: "<blockquote>୨୧ ── ˹ <b>ᴋɪᴡɪ ᴍᴜsɪᴄ</b> ˼ ── ♡</blockquote>\n\n<blockquote>🌸 <b>ʜᴇʟʟᴏ, {user}!</b>\n🎧 ɪ'ᴍ <b>{bot}</b>\n\n<i>ʏᴏᴜʀ ʟɪᴛᴛʟᴇ ᴍᴜsɪᴄ ᴄᴏᴍᴘᴀɴɪᴏɴ ♡</i></blockquote>\n\n<blockquote expandable>🎀 <b>ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴋɪᴡɪ ᴍᴜsɪᴄ</b>\n\n✨ ᴡʜᴇʀᴇ ᴇᴠᴇʀʏ ʙᴇᴀᴛ ғᴇᴇʟs ʟɪᴋᴇ ᴍᴀɢɪᴄ.\n\n🎶 <b>ʜɪɢʜ-ǫᴜᴀʟɪᴛʏ ᴍᴜsɪᴄ</b>\n🌷 <b>sᴍᴏᴏᴛʜ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ ᴘʟᴀʏʙᴀᴄᴋ</b>\n💗 <b>ᴇɴᴊᴏʏ ᴍᴜsɪᴄ ᴡɪᴛʜ ғʀɪᴇɴᴅs</b>\n⚡ <b>ғᴀsᴛ, sɪᴍᴘʟᴇ &amp; ʀᴇʟɪᴀʙʟᴇ</b>\n\n♡ ᴀᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ ᴀɴᴅ ʟᴇᴛ ᴛʜᴇ ᴍᴇʟᴏᴅʏ ʙᴇɢɪɴ.</blockquote>\n\n<blockquote>🎀 <b>ᴄʀᴀғᴛᴇᴅ ᴡɪᴛʜ ♡ ʙʏ</b>\n<a href=\"https://t.me/itachiplub02\">ỉ ƚ α 𝚌 ͱ꧊ ỉ ﾠ𝛒 𝖑 𝚞 𝚋‹‹𝟐</a></blockquote>\n\n<blockquote>୨୧ ── <i>ᴍᴀᴅᴇ ғᴏʀ ᴍᴜsɪᴄ ʟᴏᴠᴇʀs</i> ── ♡</blockquote>"
 call_discarded: "📴 ᴛʜє ᴠσɪᴄє ᴄʜᴧᴛ ᴡᴧs єηᴅєᴅ, sσ ᴘʟᴧʏʙᴧᴄᴋ ʜᴧs sᴛσᴘᴘєᴅ.\n\n💐 sᴛᴧʀᴛ ᴧ ηєᴡ ᴠσɪᴄє ᴄʜᴧᴛ ᴧηᴅ ᴜsє /play ᴧɢᴧɪη."
 
 start_group: "<b>{emoji:💫} ɪ’ᴍ ʜєʀє!</b> ᴛʀʏ ᴧ ᴄσᴍᴍᴧηᴅ… ɪғ ʏσᴜ ᴛʜɪηᴋ ʏσᴜ ᴄᴧη ʜᴧηᴅʟє ᴍє {emoji:😉}"
