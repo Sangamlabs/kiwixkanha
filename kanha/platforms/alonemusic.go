@@ -65,7 +65,7 @@ func (a *AloneMusicPlatform) Name() state.PlatformName {
 
 func (a *AloneMusicPlatform) Priority() int {
 	// Higher priority than Meow (85).
-	return 90
+	return 100
 }
 
 // AloneMusic is currently used only as a downloader.
