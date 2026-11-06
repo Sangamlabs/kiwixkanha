@@ -142,6 +142,7 @@ func showTrackMessage(
 				Caption:     msgText,
 				ParseMode:   "HTML",
 				ReplyMarkup: markup,
+				HasSpoiler:  true,
 			},
 		)
 		if err != nil {

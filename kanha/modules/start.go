@@ -68,6 +68,7 @@ func handlePmStart(c *td.Client, m *td.Message, sender *td.User) error {
 		if _, err := c.SendPhoto(m.ChatID(), td.InputFileRemote{Id: image}, &td.SendPhotoOpts{
 			Caption:     caption,
 			ReplyMarkup: core.GetStartMarkup(m.ChatID()),
+			HasSpoiler:  true,
 		}); err == nil {
 			return nil
 		}
@@ -108,6 +109,7 @@ func startCB(c *td.Client, cb *td.UpdateNewCallbackQuery) error {
 			Photo: td.InputFileRemote{Id: config.StartImage()},
 		},
 		Caption: formattedCaption,
+		HasSpoiler:  true,
 	}
 
 	_, err = c.EditMessageMedia(cb.ChatId, content, msg.Id, &td.EditMessageMediaOpts{
