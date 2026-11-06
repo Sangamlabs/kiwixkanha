@@ -45,6 +45,7 @@ import (
 // NowPlayingData holds the necessary metadata for generating the Now Playing thumbnail.
 type NowPlayingData struct {
 	SongTitle     string
+	Requester     string
 	RequesterName string
 	RequesterID   int64
 	ArtworkURL    string
@@ -735,6 +736,7 @@ func StartNowPlayingPreparation(
 
 	data := NowPlayingData{
 		SongTitle:     track.Title,
+		Requester:     track.Requester,
 		RequesterName: requesterName,
 		RequesterID:   requesterID,
 		ArtworkURL:    track.Artwork,

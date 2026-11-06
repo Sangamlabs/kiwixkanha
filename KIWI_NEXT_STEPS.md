@@ -12,6 +12,7 @@
 - [x] Respects chat-level `/nothumb` configuration.
 - [x] Added automated temp PNG file cleanup (older than 30 minutes).
 - [x] Created unit tests in `kanha/modules/nowplaying_test.go`.
+- [x] Fixed Railway/Docker build error (`NowPlayingData.Requester` field declaration) and verified full Linux CGO compilation with code 0.
 - [x] Created persistent context documents (`KIWI_NOWPLAYING_IMPLEMENTATION.md`, `KIWI_PROJECT_CONTEXT.md`, `KIWI_NEXT_STEPS.md`).
 
 ## 2. Incomplete Tasks / Remaining Items
@@ -19,8 +20,7 @@
 - [ ] (Optional) Add a custom TTF font file at `assets/nowplaying/fonts/music.ttf` if the user prefers a distinct custom typeface beyond the default Go Bold typography.
 
 ## 3. Current Errors
-- **None in project code.**
-- *Environment note:* Direct local execution of `go build ./...` on Windows fails because `ntgcalls` requires CGO with the included Linux ELF library (`libntgcalls.a`) and `tdjson` requires Linux/Darwin (`purego.Dlopen`). This is expected because the bot is designed for Linux (Debian Bookworm) deployment as specified in `Dockerfile`. Pure Go packages (`kanha/core/models`, `kanha/utils`, `kanha/database`) build with zero errors.
+- **None.** The full production Linux CGO build (`CGO_ENABLED=1 go build -v -trimpath -ldflags="-w -s" -o app ./cmd/app/`) passes completely with exit code 0, successfully linking `libntgcalls.a` and `libtdjson.so.1.8.66`.
 
 ## 4. Exact Next Actions for Future AI Sessions
 1. First read:
