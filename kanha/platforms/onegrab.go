@@ -1,4 +1,3 @@
-
 /*
  * OneGrab API downloader for KanhaMusic.
  *
@@ -47,12 +46,12 @@ const (
 
 	oneGrabAPIURL = "https://api.onegrab.fun"
 
-	oneGrabAPITimeout = 20 * time.Second
+	oneGrabAPITimeout   = 20 * time.Second
 	oneGrabAudioTimeout = 300 * time.Second
 	oneGrabVideoTimeout = 600 * time.Second
 
-	oneGrabMinFileSize = 10_000
-	oneGrabMaxJSONSize = 2 << 20
+	oneGrabMinFileSize  = 10_000
+	oneGrabMaxJSONSize  = 2 << 20
 	oneGrabMaxErrorSize = 4096
 )
 

@@ -1,4 +1,3 @@
-
 package platforms
 
 import (
@@ -17,8 +16,6 @@ import (
 
 	state "KanhaMusic/kanha/core/models"
 )
-
-const oneGrabSpotifyIV = "72e067fbddcbcf77ebe8bc643f630d93"
 
 // processOneGrabSpotify downloads and decrypts OneGrab Spotify audio.
 // It returns a local OGG file path ready for playback.
@@ -57,10 +54,7 @@ func processOneGrabSpotify(
 		return "", fmt.Errorf("invalid Spotify AES key length: %d bytes", len(key))
 	}
 
-	iv, err := hex.DecodeString(oneGrabSpotifyIV)
-	if err != nil {
-		return "", fmt.Errorf("decode Spotify AES IV: %w", err)
-	}
+	iv := oneGrabSpotifyIV
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -140,42 +134,6 @@ func processOneGrabSpotify(
 	}
 
 	return outputPath, nil
-}
-
-// rebuildOneGrabOGG restores the OGG/Vorbis header bytes.
-func rebuildOneGrabOGG(filename string) error {
-	file, err := os.OpenFile(filename, os.O_RDWR, 0644)
-	if err != nil {
-		return fmt.Errorf("open decrypted OGG: %w", err)
-	}
-	defer file.Close()
-
-	patches := []struct {
-		offset int64
-		data   []byte
-	}{
-		{0, []byte("OggS")},
-		{6, []byte("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")},
-		{26, []byte("\x01\x1E\x01vorbis")},
-		{39, []byte("\x02")},
-		{40, []byte("\x44\xAC\x00\x00")},
-		{48, []byte("\x00\xE2\x04\x00")},
-		{56, []byte("\xB8\x01")},
-		{58, []byte("OggS")},
-		{62, []byte("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")},
-	}
-
-	for _, patch := range patches {
-		if _, err := file.WriteAt(patch.data, patch.offset); err != nil {
-			return fmt.Errorf(
-				"rebuild OGG header at offset %d: %w",
-				patch.offset,
-				err,
-			)
-		}
-	}
-
-	return file.Sync()
 }
 
 // fixOneGrabOGG remuxes the reconstructed OGG using FFmpeg.
