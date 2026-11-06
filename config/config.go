@@ -36,7 +36,7 @@ var (
 	StringSessions = getEnvStrings("STRING_SESSIONS")
 
 	// Optional
-	DBName        = getEnv("DB_NAME", "MeowMusic")
+	DBName        = getEnv("DB_NAME", "Anon")
 	SessionType   = getEnv("SESSION_TYPE", "pyrogram")
 	LoggerID      = getEnvInt64("LOGGER_ID", 0)
 	OwnerID       = getEnvInt64("OWNER_ID", 0)
