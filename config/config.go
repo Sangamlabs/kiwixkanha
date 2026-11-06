@@ -45,6 +45,8 @@ var (
 	DisableColour = getEnvBool("DISABLE_COLOUR", false)
 	MeowAPIURL    = getEnv("MEOW_API_URL", "https://music.yukiapi.site")
 	MeowAPIKey    = getEnv("MEOW_API_KEY")
+    AloneMusicAPIURL = getEnv("ALONEMUSIC_API_URL", "https://api.riteshyt.in")
+    AloneMusicAPIKey = getEnv("ALONEMUSIC_API_KEY")
 
 	DefaultLang    = getEnv("DEFAULT_LANG", "en")
 	DurationLimit  = getEnvInt("DURATION_LIMIT", 4200)
