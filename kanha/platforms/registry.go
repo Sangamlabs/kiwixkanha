@@ -20,8 +20,10 @@ package platforms
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"sort"
@@ -103,9 +105,13 @@ func GetTracks(c *td.Client, m *td.Message, video bool) ([]*state.Track, error) 
 
 	if q := m.Args(); q != "" {
 		tracks, err := searchQuery(q, video)
-		if err == nil && len(tracks) > 0 {
+		if err != nil {
+			return nil, err
+		}
+		if len(tracks) > 0 {
 			return tracks, nil
 		}
+		return nil, fmt.Errorf("no tracks found for query: %s", q)
 	}
 
 	if m.ReplyToMessageID() > 0 {
@@ -117,10 +123,86 @@ func GetTracks(c *td.Client, m *td.Message, video bool) ([]*state.Track, error) 
 
 const minPlayableAudioBytes = 32 * 1024 // 32 KB minimum valid audio/video file
 
-// ValidateAudioFile checks if the downloaded file exists, is non-empty, has reasonable size,
+// AudioProbeMetadata contains extracted audio stream properties from ffprobe.
+type AudioProbeMetadata struct {
+	CodecName string
+	Duration  float64
+	Channels  int
+	Title     string
+	Artist    string
+	ISRC      string
+}
+
+// ProbeAudioStream extracts audio metadata and stream information using ffprobe.
+func ProbeAudioStream(path string) (*AudioProbeMetadata, error) {
+	if ffprobePath, err := exec.LookPath("ffprobe"); err == nil && ffprobePath != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, ffprobePath,
+			"-v", "quiet",
+			"-print_format", "json",
+			"-show_format",
+			"-show_streams",
+			path,
+		)
+		out, err := cmd.Output()
+		if err == nil && len(out) > 0 {
+			var probeData struct {
+				Streams []struct {
+					CodecType string `json:"codec_type"`
+					CodecName string `json:"codec_name"`
+					Channels  int    `json:"channels"`
+					Duration  string `json:"duration"`
+				} `json:"streams"`
+				Format struct {
+					Duration string            `json:"duration"`
+					Size     string            `json:"size"`
+					Tags     map[string]string `json:"tags"`
+				} `json:"format"`
+			}
+			if err := json.Unmarshal(out, &probeData); err == nil {
+				res := &AudioProbeMetadata{}
+				for _, st := range probeData.Streams {
+					if st.CodecType == "audio" {
+						res.CodecName = st.CodecName
+						res.Channels = st.Channels
+						if d, err := strconv.ParseFloat(st.Duration, 64); err == nil && d > 0 {
+							res.Duration = d
+						}
+						break
+					}
+				}
+				if res.Duration == 0 {
+					if d, err := strconv.ParseFloat(probeData.Format.Duration, 64); err == nil && d > 0 {
+						res.Duration = d
+					}
+				}
+				if probeData.Format.Tags != nil {
+					for k, v := range probeData.Format.Tags {
+						kLower := strings.ToLower(k)
+						if kLower == "title" {
+							res.Title = v
+						} else if kLower == "artist" {
+							res.Artist = v
+						} else if kLower == "isrc" {
+							res.ISRC = v
+						}
+					}
+				}
+				if res.CodecName != "" {
+					return res, nil
+				}
+			}
+		}
+	}
+	return nil, errors.New("ffprobe unavailable or failed to parse audio stream")
+}
+
+// ValidateTrackAudio checks if the downloaded file exists, is non-empty, has reasonable size,
 // does not contain text/HTML error responses, has a valid audio stream via ffprobe,
-// and decodes successfully via ffmpeg.
-func ValidateAudioFile(path string) error {
+// checks plausible duration against track metadata, and decodes successfully via ffmpeg.
+func ValidateTrackAudio(path string, track *state.Track) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("empty file path")
 	}
@@ -172,7 +254,35 @@ func ValidateAudioFile(path string) error {
 	}
 
 	// Real audio-stream probing with ffprobe if installed
-	if ffprobePath, err := exec.LookPath("ffprobe"); err == nil && ffprobePath != "" {
+	var probedDuration float64
+	probeMeta, probeErr := ProbeAudioStream(path)
+	if probeErr == nil && probeMeta != nil {
+		probedDuration = probeMeta.Duration
+
+		// Verify Plausible Duration
+		if track != nil && track.Duration > 20 && probedDuration > 0 {
+			expectedDur := float64(track.Duration)
+			diff := math.Abs(probedDuration - expectedDur)
+			maxTol := 30.0
+			if pctTol := expectedDur * 0.20; pctTol > maxTol {
+				maxTol = pctTol
+			}
+			if diff > maxTol {
+				return fmt.Errorf("duration mismatch: expected ~%ds, probed %.1fs (diff %.1fs > tol %.1fs)",
+					track.Duration, probedDuration, diff, maxTol)
+			}
+		}
+
+		// Verify Version Tag if available from ID3 tags
+		if probeMeta.Title != "" && track != nil && track.Title != "" {
+			probedVer := state.ClassifyTrack(probeMeta.Title).Version
+			trackVer := state.ClassifyTrack(track.Title).Version
+			if probedVer != "" && trackVer != "" && probedVer != trackVer {
+				return fmt.Errorf("version mismatch: expected %s, probed audio tag indicates %s (%q)",
+					trackVer, probedVer, probeMeta.Title)
+			}
+		}
+	} else if ffprobePath, err := exec.LookPath("ffprobe"); err == nil && ffprobePath != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -198,7 +308,7 @@ func ValidateAudioFile(path string) error {
 			"-v", "error",
 			"-xerror",
 			"-i", path,
-			"-t", "1",
+			"-t", "1.5",
 			"-f", "null",
 			"-",
 		)
@@ -216,9 +326,14 @@ func ValidateAudioFile(path string) error {
 	return nil
 }
 
+// ValidateAudioFile maintains backward-compatible validation for general audio files.
+func ValidateAudioFile(path string) error {
+	return ValidateTrackAudio(path, nil)
+}
+
 // Download fetches the given track and returns its local file path.
-// It tries every registered platform that can download the track's source,
-// in priority order, and returns the first successful file path.
+// It checks verified Telegram audio cache, tries registered platforms in priority order,
+// validates downloaded audio streams, rejects corrupt/mismatched audio, and falls back cleanly.
 func Download(
 	ctx context.Context,
 	track *state.Track,
@@ -226,6 +341,28 @@ func Download(
 ) (string, error) {
 	if track == nil {
 		return "", errors.New("nil track provided for download")
+	}
+
+	// 1. Check verified Telegram Audio Cache
+	if cacheEntry, reason, hit := GetTelegramAudioCache().MatchTrack(track); hit && cacheEntry != nil {
+		track.CachedFileID = cacheEntry.TelegramFileID
+		track.FileUniqueID = cacheEntry.TelegramFileUniqueID
+		track.CacheMatchReason = reason
+
+		logger.Infof("[Diagnostic] Query=%q | SelectedProvider=TelegramCache | ProviderTrackID=%s | ReturnedTitle=%q | ReturnedArtist=%q | TelegramFileUniqueID=%s | CacheMatchReason=%s",
+			track.Title, track.ID, cacheEntry.Title, cacheEntry.Artist, cacheEntry.TelegramFileUniqueID, reason)
+
+		cachedLocalPath := getPath(&state.Track{ID: cacheEntry.TelegramFileID, Video: track.Video}, ".mp3")
+		if fileExists(cachedLocalPath) {
+			if err := ValidateTrackAudio(cachedLocalPath, track); err == nil {
+				logger.Infof("[Diagnostic] Cache match validated from disk: TrackID=%s | Path=%s", track.ID, cachedLocalPath)
+				return cachedLocalPath, nil
+			}
+			_ = os.Remove(cachedLocalPath)
+		}
+	} else {
+		track.CacheMatchReason = reason
+		logger.Debugf("[Diagnostic] Query=%q | TrackID=%s | CacheMatchReason=%s", track.Title, track.ID, reason)
 	}
 
 	var errs []string
@@ -241,56 +378,52 @@ func Download(
 		}
 
 		pCtx, pCancel := context.WithTimeout(ctx, perProviderTimeout)
-		if track.IsAutoplay {
-			logger.Infof("[Autoplay] Download started via %s", p.Name())
-		} else {
-			logger.Debug("Download attempt: " + string(p.Name()))
-		}
+		logger.Infof("[Diagnostic] Query=%q | SelectedProvider=%s | ProviderTrackID=%s | ReturnedTitle=%q | ReturnedArtist=%q | TelegramFileUniqueID=%s | CacheMatchReason=%s",
+			track.Title, p.Name(), track.ID, track.Title, track.Artist, track.FileUniqueID, track.CacheMatchReason)
 
 		path, err := p.Download(pCtx, track, msg)
 		pCancel()
 
 		if err != nil {
-			// Check if caller's root context was cancelled (e.g. user ran /stop or /skip)
 			if ctx.Err() != nil {
 				return "", ctx.Err()
 			}
-
-			if track.IsAutoplay {
-				logger.Warnf("[Autoplay] Provider failed: %s | Reason: %v", p.Name(), err)
-				logger.Infof("[Autoplay] Trying next provider")
-			} else {
-				logger.Warnf("Provider %s failed for %q: %v", p.Name(), track.Title, err)
-			}
+			logger.Warnf("[Diagnostic] Provider %s failed for %q (ID=%s): %v", p.Name(), track.Title, track.ID, err)
 			errs = append(errs, string(p.Name())+": "+err.Error())
 			continue
 		}
 
 		// Validate downloaded file
-		if valErr := ValidateAudioFile(path); valErr != nil {
-			_ = os.Remove(path)
-			if track.IsAutoplay {
-				logger.Warnf("[Autoplay] Provider failed: %s | Reason: %v", p.Name(), valErr)
-				logger.Infof("[Autoplay] Trying next provider")
-			} else {
-				logger.Warnf("Provider %s validation failed: %v", p.Name(), valErr)
+		if valErr := ValidateTrackAudio(path, track); valErr != nil {
+			fileSize := int64(0)
+			if fi, sErr := os.Stat(path); sErr == nil {
+				fileSize = fi.Size()
 			}
+			logger.Warnf("[Diagnostic] Validation Result: FAIL (%v) for provider %s | TrackID=%s | ActualSize=%d | Action: Falling back to next provider",
+				valErr, p.Name(), track.ID, fileSize)
+
+			_ = os.Remove(path)
 			errs = append(errs, string(p.Name())+": "+valErr.Error())
 			continue
 		}
 
-		if track.IsAutoplay {
-			logger.Infof("[Autoplay] Download validated successfully")
-		} else {
-			logger.Info("Download ok via " + string(p.Name()) + " -> " + path)
+		// Validation PASSED
+		fileSize := int64(0)
+		probedDur := float64(track.Duration)
+		if fi, sErr := os.Stat(path); sErr == nil {
+			fileSize = fi.Size()
 		}
+		if meta, pErr := ProbeAudioStream(path); pErr == nil && meta.Duration > 0 {
+			probedDur = meta.Duration
+		}
+
+		logger.Infof("[Diagnostic] Validation Result: PASS for provider %s | TrackID=%s | Title=%q | ActualSize=%d | ActualDuration=%.1fs | FinalPlaybackTrackID=%s",
+			p.Name(), track.ID, track.Title, fileSize, probedDur, track.ID)
+
 		return path, nil
 	}
 
 	if len(errs) > 0 {
-		if track.IsAutoplay {
-			logger.Warnf("[Autoplay] Track failed on all providers; moving to next candidate")
-		}
 		return "", combineErrs("download failed on all eligible providers", errs)
 	}
 	return "", errors.New("no downloader for source: " + string(track.Source))

@@ -30,6 +30,7 @@ import (
 
 	"KanhaMusic/kanha/core"
 	state "KanhaMusic/kanha/core/models"
+	"KanhaMusic/kanha/logger"
 	"KanhaMusic/kanha/utils"
 )
 
@@ -124,12 +125,17 @@ func (t *TelegramPlatform) Download(
 	path := getPath(track, ext)
 
 	if fileExists(path) {
-		if track.Duration == 0 {
-			if dur, err := utils.GetDurationByFFProbe(path); err == nil {
-				track.Duration = dur
+		if valErr := ValidateTrackAudio(path, track); valErr != nil {
+			logger.Warnf("[Telegram] Cached file %s invalid: %v — re-downloading", path, valErr)
+			_ = os.Remove(path)
+		} else {
+			if track.Duration == 0 {
+				if dur, err := utils.GetDurationByFFProbe(path); err == nil {
+					track.Duration = dur
+				}
 			}
+			return path, nil
 		}
-		return path, nil
 	}
 
 	msg, msgOk := telegramMsgCache.Get(track.ID)
@@ -191,14 +197,24 @@ func (t *TelegramPlatform) GetTracksByMessage(c *td.Client, msg *td.Message) (*s
 	}
 
 	title := "Telegram File"
+	artist := ""
+	fileUniqueID := ""
+
 	switch content := msg.Content.(type) {
 	case *td.MessageAudio:
 		if content.Audio != nil {
 			title = firstNonEmpty(content.Audio.Title, content.Audio.FileName, title)
+			artist = content.Audio.Performer
+			if content.Audio.Audio != nil && content.Audio.Audio.Remote != nil {
+				fileUniqueID = content.Audio.Audio.Remote.UniqueId
+			}
 		}
 	case *td.MessageVideo:
 		if content.Video != nil {
 			title = firstNonEmpty(content.Video.FileName, title)
+			if content.Video.Video != nil && content.Video.Video.Remote != nil {
+				fileUniqueID = content.Video.Video.Remote.UniqueId
+			}
 		}
 	}
 
@@ -208,11 +224,13 @@ func (t *TelegramPlatform) GetTracksByMessage(c *td.Client, msg *td.Message) (*s
 	}
 
 	track := &state.Track{
-		ID:       msg.RemoteFileID(),
-		Title:    title,
-		Duration: utils.GetDuration(msg),
-		URL:      url,
-		Source:   PlatformTelegram,
+		ID:           msg.RemoteFileID(),
+		Title:        title,
+		Artist:       artist,
+		Duration:     utils.GetDuration(msg),
+		URL:          url,
+		Source:       PlatformTelegram,
+		FileUniqueID: fileUniqueID,
 	}
 	telegramMsgCache.Set(track.ID, msg)
 

@@ -92,6 +92,7 @@ type RoomState struct {
 	// Session vibe tracking
 	sessionVibeMu sync.RWMutex
 	sessionVibe   *state.TrackVibeProfile
+	vibeHistory   []*state.TrackVibeProfile
 }
 
 // Room management
@@ -676,16 +677,150 @@ func (r *RoomState) GetVibeProfile() *state.TrackVibeProfile {
 	return &cpy
 }
 
-// UpdateSessionVibeFromTrack classifies the track and stores it as the session vibe profile.
+// UpdateSessionVibeFromTrack classifies the track, adds it to the recent vibe history,
+// and updates the room's session vibe profile using a weighted aggregate of recent tracks.
 func (r *RoomState) UpdateSessionVibeFromTrack(t *state.Track) {
 	if r == nil || t == nil {
 		return
 	}
-	profile := state.ClassifyTrack(t.Title)
+
+	profile := state.ClassifyTrack(t.Title, t.Artist)
 	t.VibeProfile = &profile
-	r.SetVibeProfile(&profile)
-	logger.Infof("[Vibe] Session profile updated for room %d from track %q: Genre=%s, Vibe=%s, Version=%s, Energy=%s",
-		r.ID, t.Title, profile.Genre, profile.Vibe, profile.Version, profile.Energy)
+
+	logger.Infof("[Vibe] Analyzing track: %s (Artist: %q)", t.Title, t.Artist)
+	logger.Infof("[Vibe] Classification: Genre=%s | Vibe=%s | Version=%s | Energy=%s | Confidence=%.2f",
+		profile.Genre, profile.Vibe, profile.Version, profile.Energy, profile.Confidence)
+
+	r.sessionVibeMu.Lock()
+	defer r.sessionVibeMu.Unlock()
+
+	// Append to recent history (bounded ring buffer of up to 8 tracks)
+	const maxHistory = 8
+	r.vibeHistory = append(r.vibeHistory, &profile)
+	if len(r.vibeHistory) > maxHistory {
+		r.vibeHistory = r.vibeHistory[len(r.vibeHistory)-maxHistory:]
+	}
+
+	// Calculate weighted session profile
+	aggregated := computeWeightedVibeProfile(r.vibeHistory)
+	r.sessionVibe = &aggregated
+
+	logger.Infof("[Vibe] Session profile updated successfully for room %d (History=%d tracks): Genre=%s, Vibe=%s, Version=%s, Energy=%s",
+		r.ID, len(r.vibeHistory), aggregated.Genre, aggregated.Vibe, aggregated.Version, aggregated.Energy)
+}
+
+func computeWeightedVibeProfile(history []*state.TrackVibeProfile) state.TrackVibeProfile {
+	if len(history) == 0 {
+		return state.TrackVibeProfile{
+			Genre:      state.GenreUnknown,
+			Vibe:       state.VibeUnknown,
+			Version:    state.VersionOriginal,
+			Energy:     "Medium",
+			Mood:       "Neutral",
+			Confidence: 0.25,
+		}
+	}
+
+	genreVotes := make(map[state.GenreType]float64)
+	vibeVotes := make(map[state.VibeType]float64)
+	versionVotes := make(map[state.VersionType]float64)
+
+	var totalEnergyWeighted float64
+	var totalWeight float64
+
+	n := len(history)
+	for i, p := range history {
+		if p == nil {
+			continue
+		}
+		// Weight from 1.0 (oldest) up to 1.0 + 0.75*(n-1) (newest)
+		w := 1.0 + float64(i)*0.75
+
+		// Confidence factor
+		conf := p.Confidence
+		if conf <= 0 {
+			conf = 0.5
+		}
+
+		if p.Genre != state.GenreUnknown && p.Genre != state.GenreNone {
+			genreVotes[p.Genre] += w * conf
+		}
+		if p.Vibe != state.VibeUnknown && p.Vibe != state.VibeNone {
+			vibeVotes[p.Vibe] += w * conf
+		}
+		versionVotes[p.Version] += w
+
+		energyVal := 2.0 // Medium
+		switch p.Energy {
+		case "Low":
+			energyVal = 1.0
+		case "High":
+			energyVal = 3.0
+		case "Very High":
+			energyVal = 4.0
+		}
+		totalEnergyWeighted += energyVal * w
+		totalWeight += w
+	}
+
+	// Pick top Genre
+	topGenre := state.GenreUnknown
+	var maxGenreVote float64
+	for g, vote := range genreVotes {
+		if vote > maxGenreVote {
+			maxGenreVote = vote
+			topGenre = g
+		}
+	}
+
+	// Pick top Vibe
+	topVibe := state.VibeUnknown
+	var maxVibeVote float64
+	for v, vote := range vibeVotes {
+		if vote > maxVibeVote {
+			maxVibeVote = vote
+			topVibe = v
+		}
+	}
+
+	// Pick top Version (prefer newest track's version if recent track is Slowed/Remix)
+	topVersion := history[n-1].Version
+	if topVersion == state.VersionOriginal {
+		var maxVerVote float64
+		for ver, vote := range versionVotes {
+			if vote > maxVerVote {
+				maxVerVote = vote
+				topVersion = ver
+			}
+		}
+	}
+
+	// Calculate average Energy
+	avgEnergyStr := "Medium"
+	if totalWeight > 0 {
+		avgEnergy := totalEnergyWeighted / totalWeight
+		if avgEnergy >= 3.4 {
+			avgEnergyStr = "Very High"
+		} else if avgEnergy >= 2.4 {
+			avgEnergyStr = "High"
+		} else if avgEnergy <= 1.6 {
+			avgEnergyStr = "Low"
+		} else {
+			avgEnergyStr = "Medium"
+		}
+	}
+
+	// Base query from latest track
+	latest := history[n-1]
+	return state.TrackVibeProfile{
+		Genre:      topGenre,
+		Vibe:       topVibe,
+		Version:    topVersion,
+		Energy:     avgEnergyStr,
+		Mood:       latest.Mood,
+		Confidence: latest.Confidence,
+		BaseQuery:  latest.BaseQuery,
+	}
 }
 
 // State checks

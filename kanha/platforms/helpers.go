@@ -89,6 +89,12 @@ func findFile(track *state.Track) string {
 	}
 	for _, f := range files {
 		if info, err := os.Stat(f); err == nil && info.Size() > 0 {
+			if valErr := ValidateTrackAudio(f, track); valErr != nil {
+				logger.Warnf("[DiskCache] Cached file %s failed validation for track %q (ID=%s): %v — purging",
+					f, track.Title, track.ID, valErr)
+				_ = os.Remove(f)
+				continue
+			}
 			return f
 		}
 	}

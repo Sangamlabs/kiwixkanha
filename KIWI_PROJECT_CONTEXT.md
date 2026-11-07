@@ -80,3 +80,49 @@ Existing providers (OneGrab, AloneMusic, MeowAPI, Spotify, YouTube) remain untou
    - Playback race conditions (stale workers from previous generations or manual `/play`/`/playforce` overrides) are guarded with per-room generation tokens and cancellable contexts.
 
 
+
+8. **Track Identity Verification & Telegram Audio Cache Engine:**
+   - **Root Cause of Wrong Song Playing:**
+     - Query resolution fallback in `platforms.GetTracks` previously fell through to replied Telegram media (`fromReply`) when `searchQuery` failed, silently hijacking manual requests like `/playforce Dil To Pagal Hai` with unrelated files.
+     - Unverified title similarity allowed Telegram cache and disk cache to map unrelated audio files (e.g., returning a 45s audio clip for a 334s song).
+     - Disk cache in `findFile(track)` returned existing poisoned files without duration/integrity verification.
+     - Title normalization previously regex-stripped version tags (e.g., "remix"), collapsing "Dil To Pagal Hai (Remix)" and "Dil To Pagal Hai" into the same query.
+   - **Strict Canonical Track Identity:**
+     - `CanonicalRecordingKey(title, artist)` creates strict keys: `"<artist> - <title> [<version>]"`.
+     - Preserves distinction between Original, Remix, Slowed, Sped Up, and Live recordings.
+     - Added `Artist`, `ISRC`, `FileUniqueID`, `CachedFileID`, `CacheMatchReason` to `models.Track`.
+   - **Telegram Audio Cache (`kanha/platforms/telegram_cache.go`):**
+     - Matches on exact `ProviderTrackID` + `Source` (Priority 1) or `ISRC` (Priority 2).
+     - Matches canonical recording key only if version, artist, and duration (within 6s or 5% tolerance) match (Priority 3).
+     - Strictly rejects title similarity alone without verified identity.
+   - **Pre-Playback Audio Stream Validation (`ValidateTrackAudio`):**
+     - Uses `ffprobe` (`ProbeAudioStream`) to inspect audio codec, sample rate, channels, tags, and exact duration.
+     - Rejects non-audio, corrupt headers, HTML error payloads, and files smaller than 32KB.
+     - Validates actual decoding of first 1.5 seconds via `ffmpeg -v error -t 1.5 -f null -`.
+     - Strictly validates probed duration against track metadata (within 20% or 30s tolerance).
+   - **Intelligent Provider Fallback:**
+     - Iterates registered providers in order; if a provider returns an audio file that fails duration or decoding validation, it logs a warning, purges the invalid file, and seamlessly falls back to the next provider.
+   - **Diagnostic Logging:**
+     - Comprehensive log lines emitted at every stage: Query, SelectedProvider, ProviderTrackID, ReturnedTitle, ReturnedArtist, TelegramFileUniqueID, CacheMatchReason, ActualSize, ActualDuration, Validation Result, and FinalPlaybackTrackID.
+
+
+9. **Vibe-Based Autoplay Engine V2:**
+   - **Expanded Classification Dictionaries:**
+     - Added comprehensive genres: `Bollywood`, `Punjabi`, `Pop`, `Hip-Hop`, `Rap`, `Phonk`, `EDM`, `Indie`, `Rock`, `Classical`, `Electronic`, `Lo-fi`, `Instrumental`, `Other`, `Unknown`.
+     - Added comprehensive vibes: `Romantic`, `Sad`, `Emotional`, `Chill`, `Relaxing`, `Energetic`, `Party`, `Dark`, `Aggressive`, `Motivational`, `Dreamy`, `Peaceful`, `Devotional`, `Soft`, `Lofi`, `Other`, `Unknown`.
+     - Added comprehensive versions: `Original`, `Slowed`, `Slowed + Reverb`, `Sped Up`, `Nightcore`, `Remix`, `Mashup`, `Instrumental`, `Acoustic`, `Lofi`, `Live`.
+     - Enriched dictionaries covering Indian/Bollywood (Arijit Singh, Lata Mangeshkar, Udit Narayan, Pritam, Shreya Ghoshal, T-Series, etc.), Punjabi (Sidhu Moosewala, Diljit Dosanjh, Karan Aujla, AP Dhillon, etc.), Devotional/Bhajan/Sufi, alongside Western Phonk, EDM, Rock, and Hip-Hop.
+     - Clean YouTube clutter stripping while strictly preserving musical version tokens.
+     - Explicit `Unknown` enum fallback instead of empty strings `""` when evidence is below confidence threshold ($0.40$).
+   - **Weighted Session Vibe Profile:**
+     - Session profile is computed over a sliding history buffer of up to 8 tracks per room.
+     - Linear decay weighting ($w_i = 1.0 + 0.75 \times i$) grants recent tracks highest influence while smoothing out single-track anomalies.
+     - Autoplay playback successes update session vibe upon `r.Play()`, guaranteeing continuous session evolution without manual intervention.
+   - **Candidate Scoring & Fallback Pools:**
+     - Differentiates `exactMatches` ($\ge 70$), `moderateMatches` ($\ge 45$), and labeled `fallbackMatches`.
+     - Rejects fabricating high match scores when profile is unknown (routes explicitly to fallback pool).
+     - Scores include exact/compatible vibe, genre, version, energy, and artist diversity bonus.
+     - Heavy penalties (-60 conflicting genre, -30 opposite tempo) eliminate jarring switches.
+   - **Provider Payload Sanitization:**
+     - `OneGrab` and `AloneMusic` download pipelines verify `Content-Type` headers (rejecting `text/html`, `text/plain`, `application/json`).
+     - File inspection checks initial 512 bytes for HTML doctype, tags, or JSON error messages, failing early before corrupt audio reaches ffmpeg/ntgcalls.

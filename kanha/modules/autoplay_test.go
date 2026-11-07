@@ -815,3 +815,108 @@ func TestPrematureStreamEndIgnored(t *testing.T) {
 		t.Fatal("Expected descriptive reason for premature stream-end")
 	}
 }
+
+// TestWeightedSessionVibeProfile verifies weighted recent track aggregation and gradual style shifts.
+func TestWeightedSessionVibeProfile(t *testing.T) {
+	chatID := int64(990022)
+	room := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	// Play Track 1: Bollywood Energetic
+	t1 := &state.Track{ID: "t1", Title: "Chaiyya Chaiyya", Artist: "Sukhwinder Singh"}
+	room.UpdateSessionVibeFromTrack(t1)
+
+	p1 := room.GetVibeProfile()
+	if p1.Genre != state.GenreBollywood || p1.Vibe != state.VibeEnergetic {
+		t.Fatalf("Expected Bollywood/Energetic for t1, got Genre=%s Vibe=%s", p1.Genre, p1.Vibe)
+	}
+
+	// Play Track 2: Bollywood Romantic
+	t2 := &state.Track{ID: "t2", Title: "Tum Hi Ho", Artist: "Arijit Singh"}
+	room.UpdateSessionVibeFromTrack(t2)
+
+	// Play Track 3: Bollywood Romantic
+	t3 := &state.Track{ID: "t3", Title: "Dil To Pagal Hai", Artist: "Lata Mangeshkar, Udit Narayan"}
+	room.UpdateSessionVibeFromTrack(t3)
+
+	p3 := room.GetVibeProfile()
+	if p3.Genre != state.GenreBollywood {
+		t.Fatalf("Expected GenreBollywood, got %s", p3.Genre)
+	}
+	if p3.Vibe != state.VibeRomantic {
+		t.Fatalf("Expected VibeRomantic as top weighted vibe, got %s", p3.Vibe)
+	}
+
+	// Gradual shift: user manually requests Punjabi tracks
+	t4 := &state.Track{ID: "t4", Title: "Sidhu Moose Wala - 295", Artist: "Sidhu Moose Wala"}
+	room.UpdateSessionVibeFromTrack(t4)
+	t5 := &state.Track{ID: "t5", Title: "Brown Munde", Artist: "AP Dhillon, Gurinder Gill"}
+	room.UpdateSessionVibeFromTrack(t5)
+	t6 := &state.Track{ID: "t6", Title: "Karan Aujla - Softly", Artist: "Karan Aujla"}
+	room.UpdateSessionVibeFromTrack(t6)
+
+	p6 := room.GetVibeProfile()
+	// Recent Punjabi tracks carry much higher weights (1.0 + 0.75*i) and should have shifted the session genre
+	if p6.Genre != state.GenrePunjabi {
+		t.Fatalf("Expected session genre to gradually shift to Punjabi, got: %s", p6.Genre)
+	}
+}
+
+// TestUnknownMetadataCandidateSelectionFallback verifies that an unknown profile uses labeled fallback
+// and does not fabricate exact or moderate vibe match claims.
+func TestUnknownMetadataCandidateSelectionFallback(t *testing.T) {
+	chatID := int64(990033)
+	room := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	// Start with unknown track
+	tUnknown := &state.Track{ID: "unknown_1", Title: "Random Unknown Video 98234", Artist: "Unknown"}
+	room.UpdateSessionVibeFromTrack(tUnknown)
+
+	profile := room.GetVibeProfile()
+	if profile.Genre != state.GenreUnknown || profile.Vibe != state.VibeUnknown {
+		t.Fatalf("Expected Unknown genre and vibe, got Genre=%s Vibe=%s", profile.Genre, profile.Vibe)
+	}
+
+	// When scoring against candidates, it must return 20 and broad metadata fallback reason
+	cand := &state.Track{ID: "cand_1", Title: "Arijit Singh - Kesariya", Artist: "Arijit Singh"}
+	cProf := state.ClassifyTrack(cand.Title, cand.Artist)
+
+	score, reasons := profile.ScoreCandidateDetails(cProf, tUnknown.Artist, cand.Artist)
+	if score != 20 {
+		t.Fatalf("Expected baseline score 20 for unknown session profile, got %d", score)
+	}
+	if len(reasons) == 0 || reasons[0] != "Broad metadata/search fallback (unknown session profile)" {
+		t.Fatalf("Expected explicit fallback reason, got: %v", reasons)
+	}
+}
+
+// TestArtistDiversityBonus verifies that different artists receive the diversity bonus.
+func TestArtistDiversityBonus(t *testing.T) {
+	session := state.ClassifyTrack("Arijit Singh - Tum Hi Ho", "Arijit Singh")
+	candSameArtist := state.ClassifyTrack("Arijit Singh - Channa Mereya", "Arijit Singh")
+	candDiffArtist := state.ClassifyTrack("Atif Aslam - Dil Diyan Gallan", "Atif Aslam")
+
+	scoreSame, reasonsSame := session.ScoreCandidateDetails(candSameArtist, "Arijit Singh", "Arijit Singh")
+	scoreDiff, reasonsDiff := session.ScoreCandidateDetails(candDiffArtist, "Arijit Singh", "Atif Aslam")
+
+	hasDiversityReason := false
+	for _, r := range reasonsDiff {
+		if r == "Artist diversity (+5)" {
+			hasDiversityReason = true
+			break
+		}
+	}
+	if !hasDiversityReason {
+		t.Fatalf("Expected 'Artist diversity (+5)' reason for different artist, got reasons: %v", reasonsDiff)
+	}
+	for _, r := range reasonsSame {
+		if r == "Artist diversity (+5)" {
+			t.Fatalf("Did not expect artist diversity bonus for same artist, got reasons: %v", reasonsSame)
+		}
+	}
+	if scoreDiff <= scoreSame {
+		t.Fatalf("Expected score with artist diversity (%d) to be higher than without (%d)", scoreDiff, scoreSame)
+	}
+}
+

@@ -24,6 +24,7 @@ func TestClassifyTrackVersions(t *testing.T) {
 		{"Adele - Hello (Instrumental)", VersionInstrumental},
 		{"Nirvana - About a Girl (Acoustic)", VersionAcoustic},
 		{"Coldplay - Yellow (Remix)", VersionRemix},
+		{"Arijit Singh - Live in Concert", VersionLive},
 		{"Coldplay - Yellow", VersionOriginal},
 	}
 
@@ -38,26 +39,37 @@ func TestClassifyTrackVersions(t *testing.T) {
 func TestClassifyTrackGenres(t *testing.T) {
 	cases := []struct {
 		title         string
+		artist        string
 		expectedGenre GenreType
 	}{
-		{"Kordhell - Live Another Day", GenrePhonk},
-		{"DVRST - Close Eyes", GenrePhonk},
-		{"Metamorphosis Phonk", GenrePhonk},
-		{"M4GN - EL CONTROL", GenrePhonk},
-		{"Eminem - Without Me", GenreHipHop},
-		{"Drake - God's Plan", GenreHipHop},
-		{"Martin Garrix - Animals", GenreEDM},
-		{"Alan Walker - Faded", GenreEDM},
-		{"Arctic Monkeys - Do I Wanna Know", GenreIndie},
-		{"The Neighbourhood - Sweater Weather", GenreIndie},
-		{"Taylor Swift - Blank Space", GenrePop},
-		{"Billie Eilish - Bad Guy", GenrePop},
+		{"Kordhell - Live Another Day", "", GenrePhonk},
+		{"DVRST - Close Eyes", "", GenrePhonk},
+		{"Metamorphosis Phonk", "", GenrePhonk},
+		{"M4GN - EL CONTROL", "", GenrePhonk},
+		{"Eminem - Without Me", "", GenreHipHop},
+		{"Drake - God's Plan", "", GenreHipHop},
+		{"Martin Garrix - Animals", "", GenreEDM},
+		{"Alan Walker - Faded", "", GenreEDM},
+		{"Arctic Monkeys - Do I Wanna Know", "", GenreIndie},
+		{"The Neighbourhood - Sweater Weather", "", GenreIndie},
+		{"Taylor Swift - Blank Space", "", GenrePop},
+		{"Billie Eilish - Bad Guy", "", GenrePop},
+		// Indian & Regional Categories (previously returned empty "")
+		{"Dil To Pagal Hai - Full Song", "Lata Mangeshkar, Udit Narayan", GenreBollywood},
+		{"Channa Mereya", "Pritam, Arijit Singh", GenreBollywood},
+		{"Tum Hi Ho", "Arijit Singh", GenreBollywood},
+		{"Sidhu Moose Wala - 295", "", GenrePunjabi},
+		{"Brown Munde", "AP Dhillon, Gurinder Gill", GenrePunjabi},
+		{"Karan Aujla - Softly", "", GenrePunjabi},
+		{"Hanuman Chalisa", "Hariharan", GenreBollywood},
+		{"Nirvana - Smells Like Teen Spirit", "", GenreRock},
+		{"Lofi Girl - Study Beats", "", GenreLofi},
 	}
 
 	for _, tc := range cases {
-		profile := ClassifyTrack(tc.title)
+		profile := ClassifyTrack(tc.title, tc.artist)
 		if profile.Genre != tc.expectedGenre {
-			t.Errorf("For %q expected genre %s, got %s", tc.title, tc.expectedGenre, profile.Genre)
+			t.Errorf("For %q (artist %q) expected genre %s, got %s", tc.title, tc.artist, tc.expectedGenre, profile.Genre)
 		}
 	}
 }
@@ -73,6 +85,10 @@ func TestClassifyTrackVibes(t *testing.T) {
 		{"Dark Demons Shadow Grim Doom", VibeDark},
 		{"Soft Gentle Whisper Delicate Lullaby", VibeSoft},
 		{"Chill Relaxing Peaceful Meditation", VibeChill},
+		{"Party All Night Club Dhol Dhamaka", VibeParty},
+		{"Workout Gym Beast Mode High Energy", VibeEnergetic},
+		{"Hanuman Chalisa Bhakti", VibeDevotional},
+		{"Motivational Rise Legend Warrior Champion", VibeMotivational},
 	}
 
 	for _, tc := range cases {
@@ -83,13 +99,61 @@ func TestClassifyTrackVibes(t *testing.T) {
 	}
 }
 
+func TestClassifyRealWorldIndianTitles(t *testing.T) {
+	// Real-world YouTube titles that previously produced Genre=, Vibe=
+	t1 := ClassifyTrack("Dil To Pagal Hai - Full Title Song | Shah Rukh Khan | Madhuri Dixit")
+	if t1.Genre != GenreBollywood || t1.Vibe != VibeRomantic {
+		t.Errorf("Expected Bollywood/Romantic for Dil To Pagal Hai, got Genre=%s, Vibe=%s", t1.Genre, t1.Vibe)
+	}
+
+	t2 := ClassifyTrack("Chaiyya Chaiyya (From \"Dil Se..\")")
+	if t2.Genre != GenreBollywood || t2.Vibe != VibeEnergetic {
+		t.Errorf("Expected Bollywood/Energetic for Chaiyya Chaiyya, got Genre=%s, Vibe=%s", t2.Genre, t2.Vibe)
+	}
+
+	t3 := ClassifyTrack("Kala Chashma | Baar Baar Dekho | Sidharth M Katrina K | Prem & Hardeep")
+	if t3.Vibe != VibeParty {
+		t.Errorf("Expected Party vibe for Kala Chashma, got %s", t3.Vibe)
+	}
+
+	t4 := ClassifyTrack("Sidhu Moose Wala - 295 (Official Audio)")
+	if t4.Genre != GenrePunjabi {
+		t.Errorf("Expected Punjabi for 295, got %s", t4.Genre)
+	}
+}
+
+func TestUnknownMetadataHandling(t *testing.T) {
+	// Completely unknown random string with no musical signals
+	profile := ClassifyTrack("X893 QZW 772109")
+	if profile.Genre != GenreUnknown {
+		t.Errorf("Expected GenreUnknown, got %s", profile.Genre)
+	}
+	if profile.Vibe != VibeUnknown {
+		t.Errorf("Expected VibeUnknown, got %s", profile.Vibe)
+	}
+	if profile.Confidence > 0.40 {
+		t.Errorf("Expected low confidence (<=0.40) for unknown track, got %.2f", profile.Confidence)
+	}
+
+	// Unknown session profile candidate scoring
+	cand := ClassifyTrack("Arijit Singh - Tum Hi Ho")
+	score, reasons := profile.ScoreCandidateDetails(cand, "", "")
+	if score != 20 {
+		t.Errorf("Expected baseline score 20 for unknown session profile, got %d", score)
+	}
+	if len(reasons) == 0 || reasons[0] != "Broad metadata/search fallback (unknown session profile)" {
+		t.Errorf("Expected explicit broad metadata fallback reason, got %v", reasons)
+	}
+}
+
 func TestScoreCandidateMatchesAndPenalties(t *testing.T) {
 	// Base session: Slowed Phonk
 	session := ClassifyTrack("Kordhell - Murder In My Mind (Slowed)")
 
 	// 1. Exact match candidate
 	candExact := ClassifyTrack("DVRST - Close Eyes (Slowed)")
-	scoreExact := session.ScoreCandidate(candExact)
+	scoreExact, reasonsExact := session.ScoreCandidateDetails(candExact, "", "")
+	t.Logf("session=%+v, candExact=%+v, scoreExact=%d, reasons=%v", session, candExact, scoreExact, reasonsExact)
 	if scoreExact < 60 {
 		t.Errorf("Expected score >= 60 for exact match, got %d", scoreExact)
 	}
@@ -122,4 +186,3 @@ func TestScoreCandidateMatchesAndPenalties(t *testing.T) {
 		t.Errorf("Expected negative score for conflicting EDM genre, got %d", scoreEDM)
 	}
 }
-

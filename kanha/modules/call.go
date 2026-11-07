@@ -367,6 +367,8 @@ func streamEndHandler(
 
 	if isAutoplay {
 		r.SetActiveTrackGen(workerGen)
+		r.UpdateSessionVibeFromTrack(t)
+		logger.Infof("[Autoplay] Playback started successfully and session profile updated for chat %d", chatID)
 	}
 
 	statusMsg = sendNowPlaying(c, statusMsg, cid, r, t)
@@ -399,14 +401,18 @@ func pickAutoplayCandidate(chatID int64, cur *state.Track) *state.Track {
 	if hasRoom && room.GetVibeProfile() != nil {
 		profile = *room.GetVibeProfile()
 	} else {
-		profile = state.ClassifyTrack(cur.Title)
+		profile = state.ClassifyTrack(cur.Title, cur.Artist)
 		if hasRoom {
 			room.SetVibeProfile(&profile)
 		}
 	}
 
 	cleanTitle := cleanSongTitleForSearch(cur.Title)
-	logger.Infof("[Autoplay] Target vibe profile for chat %d: Genre=%s, Vibe=%s, Version=%s, Energy=%s (seed: %q)",
+	if profile.Confidence <= 0.40 || (profile.Genre == state.GenreUnknown && profile.Vibe == state.VibeUnknown) {
+		logger.Infof("[Vibe] Classification confidence too low (Confidence=%.2f). Using metadata fallback.", profile.Confidence)
+	}
+
+	logger.Infof("[Autoplay] Target profile for chat %d:\nGenre=%s\nVibe=%s\nVersion=%s\nEnergy=%s\n(Seed: %q)",
 		chatID, profile.Genre, profile.Vibe, profile.Version, profile.Energy, cleanTitle)
 
 	queries := buildVibeSearchQueries(profile, cleanTitle)
@@ -453,26 +459,38 @@ func pickAutoplayCandidate(chatID int64, cur *state.Track) *state.Track {
 	var moderateMatches []*state.Track
 	var fallbackMatches []*state.Track
 
+	isProfileUnknown := (profile.Genre == state.GenreUnknown || profile.Genre == state.GenreNone) &&
+		(profile.Vibe == state.VibeUnknown || profile.Vibe == state.VibeNone)
+
 	for _, t := range rawCandidates {
 		// Strict exclusion of played or failed tracks
-		if t.ID == "" || t.ID == cur.ID || apIsPlayed(chatID, t.ID) || isTrackFailedRecently(t.ID) {
+		if t.ID == "" || t.ID == cur.ID || apIsPlayed(chatID, t.ID) || (hasRoom && room.HasPlayed(t.ID, t.Title)) {
+			logger.Infof("[Autoplay] Candidate rejected for chat %d: %s (ID=%s)\nReason=Already played in current session", chatID, t.Title, t.ID)
 			continue
 		}
-		if hasRoom && room.HasPlayed(t.ID, t.Title) {
+		if isTrackFailedRecently(t.ID) {
+			logger.Infof("[Autoplay] Candidate rejected for chat %d: %s (ID=%s)\nReason=Previously failed download in session", chatID, t.Title, t.ID)
 			continue
 		}
 
-		cProfile := state.ClassifyTrack(t.Title)
-		score := profile.ScoreCandidate(cProfile)
+		cProfile := state.ClassifyTrack(t.Title, t.Artist)
+		score, reasons := profile.ScoreCandidateDetails(cProfile, cur.Artist, t.Artist)
 
 		// Exclude conflicting genres / styles
 		if score < 0 {
+			logger.Infof("[Autoplay] Candidate rejected for chat %d: %s (ID=%s)\nReason=Conflicting genre/version (Score=%d)", chatID, t.Title, t.ID, score)
 			continue
 		}
 
-		if score >= 60 {
+		reasonStr := "- " + strings.Join(reasons, "\n- ")
+		logger.Infof("[Autoplay] Candidate:\n%s (ID=%s)\n[Autoplay] Match Score=%d\nReasons:\n%s",
+			t.Title, t.ID, score, reasonStr)
+
+		if isProfileUnknown {
+			fallbackMatches = append(fallbackMatches, t)
+		} else if score >= 70 {
 			exactMatches = append(exactMatches, t)
-		} else if score >= 30 {
+		} else if score >= 45 {
 			moderateMatches = append(moderateMatches, t)
 		} else {
 			fallbackMatches = append(fallbackMatches, t)
@@ -517,10 +535,10 @@ func pickAutoplayCandidate(chatID int64, cur *state.Track) *state.Track {
 	}
 	chosen.Requester = "🎵 ᴀᴜᴛᴏᴘʟᴀʏ"
 	chosen.IsAutoplay = true
-	cProf := state.ClassifyTrack(chosen.Title)
+	cProf := state.ClassifyTrack(chosen.Title, chosen.Artist)
 	chosen.VibeProfile = &cProf
 
-	logger.Infof("[Autoplay] Successfully picked vibe song: %q (%s) [Genre=%s, Vibe=%s, Version=%s] for chat %d",
+	logger.Infof("[Autoplay] Candidate accepted: %q (%s) [Genre=%s, Vibe=%s, Version=%s] for chat %d",
 		chosen.Title, chosen.ID, cProf.Genre, cProf.Vibe, cProf.Version, chatID)
 	return chosen
 }
@@ -528,7 +546,28 @@ func pickAutoplayCandidate(chatID int64, cur *state.Track) *state.Track {
 func buildVibeSearchQueries(profile state.TrackVibeProfile, cleanTitle string) []string {
 	var queries []string
 
-	if profile.Genre == state.GenrePhonk {
+	switch profile.Genre {
+	case state.GenreBollywood:
+		switch profile.Vibe {
+		case state.VibeRomantic:
+			queries = append(queries, cleanTitle+" romantic", "bollywood romantic songs", "hindi love songs")
+		case state.VibeSad, state.VibeEmotional:
+			queries = append(queries, cleanTitle+" sad hindi", "sad bollywood songs", "emotional hindi songs")
+		case state.VibeParty, state.VibeEnergetic:
+			queries = append(queries, cleanTitle+" dance mix", "bollywood party songs", "hindi dance hits")
+		default:
+			queries = append(queries, cleanTitle+" bollywood", "bollywood hits", "popular hindi songs")
+		}
+	case state.GenrePunjabi:
+		switch profile.Vibe {
+		case state.VibeParty, state.VibeEnergetic:
+			queries = append(queries, cleanTitle+" punjabi bhangra", "punjabi party hits")
+		case state.VibeSad:
+			queries = append(queries, cleanTitle+" sad punjabi", "punjabi sad songs")
+		default:
+			queries = append(queries, cleanTitle+" punjabi", "latest punjabi hits")
+		}
+	case state.GenrePhonk:
 		switch profile.Version {
 		case state.VersionSlowed:
 			queries = append(queries, cleanTitle+" slowed phonk", "slowed phonk drift", "phonk slowed")
@@ -539,29 +578,50 @@ func buildVibeSearchQueries(profile state.TrackVibeProfile, cleanTitle string) [
 		default:
 			queries = append(queries, cleanTitle+" phonk", "drift phonk", "phonk bass")
 		}
-	} else if profile.Vibe == state.VibeLofi {
-		queries = append(queries, cleanTitle+" lofi", "lofi chill beats", "lofi hip hop relax")
-	} else if profile.Vibe == state.VibeSad {
-		switch profile.Version {
-		case state.VersionSlowed, state.VersionSlowedReverb:
-			queries = append(queries, cleanTitle+" sad slowed", "sad slowed and reverb songs", "sad acoustic slow")
-		default:
-			queries = append(queries, cleanTitle+" sad songs", "sad songs chill", "melancholy acoustic")
-		}
-	} else if profile.Vibe == state.VibeRomantic {
-		queries = append(queries, cleanTitle+" love song", "romantic love songs", "slow romantic acoustic")
-	} else if profile.Vibe == state.VibeChill {
-		queries = append(queries, cleanTitle+" chill", "chill mellow beats", "relaxing chill songs")
-	} else if profile.Vibe == state.VibeDark {
-		queries = append(queries, cleanTitle+" dark", "dark alternative", "dark underground")
-	} else if profile.Genre == state.GenreHipHop {
-		queries = append(queries, cleanTitle+" hip hop", "hip hop rap", "chill rap")
-	} else if profile.Genre == state.GenreEDM {
+	case state.GenreHipHop, state.GenreRap:
+		queries = append(queries, cleanTitle+" rap", "hip hop rap hits", "rap songs")
+	case state.GenreRock:
+		queries = append(queries, cleanTitle+" rock", "rock hits", "alternative rock")
+	case state.GenreEDM, state.GenreElectronic:
 		queries = append(queries, cleanTitle+" edm", "dance edm house", "electronic club")
-	} else if profile.Genre == state.GenreIndie {
+	case state.GenreLofi:
+		queries = append(queries, cleanTitle+" lofi", "lofi chill beats", "lofi hip hop relax")
+	case state.GenreIndie:
 		queries = append(queries, cleanTitle+" indie", "indie alternative songs", "indie pop")
-	} else if profile.Genre == state.GenrePop {
+	case state.GenrePop:
 		queries = append(queries, cleanTitle+" pop hits", "pop songs similar")
+	}
+
+	// Add vibe-specific queries if genre wasn't specific
+	if len(queries) == 0 {
+		switch profile.Vibe {
+		case state.VibeRomantic:
+			queries = append(queries, cleanTitle+" love song", "romantic love songs", "slow romantic acoustic")
+		case state.VibeSad:
+			queries = append(queries, cleanTitle+" sad songs", "sad songs chill", "melancholy acoustic")
+		case state.VibeChill, state.VibeRelaxing:
+			queries = append(queries, cleanTitle+" chill", "chill mellow beats", "relaxing chill songs")
+		case state.VibeParty, state.VibeEnergetic:
+			queries = append(queries, cleanTitle+" party mix", "party dance songs")
+		case state.VibeDark, state.VibeAggressive:
+			queries = append(queries, cleanTitle+" dark", "dark alternative", "dark underground")
+		case state.VibeDevotional:
+			queries = append(queries, cleanTitle+" bhajan", "devotional songs")
+		case state.VibeLofi:
+			queries = append(queries, cleanTitle+" lofi", "lofi chill beats")
+		}
+	}
+
+	// Add version modifiers if specialized
+	switch profile.Version {
+	case state.VersionSlowedReverb:
+		queries = append(queries, cleanTitle+" slowed and reverb", "slowed reverb songs")
+	case state.VersionSlowed:
+		queries = append(queries, cleanTitle+" slowed", "slowed songs")
+	case state.VersionSpedUp:
+		queries = append(queries, cleanTitle+" sped up")
+	case state.VersionAcoustic:
+		queries = append(queries, cleanTitle+" acoustic")
 	}
 
 	queries = append(queries, cleanTitle+" similar songs", cleanTitle)

@@ -13,36 +13,50 @@
 - [x] Added automated temp PNG file cleanup (older than 30 minutes).
 - [x] Created unit tests in `kanha/modules/nowplaying_test.go`.
 - [x] Fixed Railway/Docker build error (`NowPlayingData.Requester` field declaration) and verified full Linux CGO compilation with code 0.
-- [x] Implemented Vibe Detection Engine in `kanha/core/models/vibe.go` (Genre, Version, Vibe, Energy, Mood).
-- [x] Implemented session-based vibe retention on `RoomState` (`GetVibeProfile`, `SetVibeProfile`, `UpdateSessionVibeFromTrack`).
-- [x] Implemented tiered candidate scoring and conflict filtering in `kanha/modules/call.go` (`buildVibeSearchQueries`, `pickAutoplayCandidate`).
-- [x] Fixed `/skip` behavior in `kanha/modules/skip.go`: empty queue stops playback and never invokes autoplay; manual queue has strict priority over autoplay.
-- [x] Preserved `/askip` for explicit autoplay skipping.
-- [x] Added unit tests for all 12 scenarios in `kanha/modules/autoplay_test.go` and `kanha/core/models/vibe_test.go`.
-- [x] Verified full Linux test suite passes (`go test ./kanha/modules`, `go test ./kanha/core/models`) and production CGO binary builds with code 0.
-- [x] Created persistent context documents (`KIWI_NOWPLAYING_IMPLEMENTATION.md`, `KIWI_PROJECT_CONTEXT.md`, `KIWI_NEXT_STEPS.md`).
+- [x] Implemented Vibe-Based Autoplay Engine V2:
+  - Overhauled `kanha/core/models/vibe.go`: expanded genres (Bollywood, Punjabi, Pop, Hip-Hop, Rap, Phonk, EDM, Indie, Rock, Classical, Electronic, Lo-fi, Instrumental, Other, Unknown) and vibes (Romantic, Sad, Emotional, Chill, Relaxing, Energetic, Party, Dark, Aggressive, Motivational, Dreamy, Peaceful, Devotional, Soft, Lofi, Other, Unknown).
+  - Enriched dictionaries covering Indian/Bollywood (Arijit Singh, Lata Mangeshkar, Udit Narayan, Pritam, Shreya Ghoshal, T-Series, etc.), Punjabi (Sidhu Moosewala, Diljit Dosanjh, Karan Aujla, AP Dhillon, etc.), alongside Phonk, EDM, Rock, and Hip-Hop.
+  - Implemented `MatchWeights` and `ScoreCandidateDetails` with clear scoring reasons, artist diversity bonuses, and strict conflict penalties (-60 conflicting genre, -30 opposite tempo).
+  - Implemented weighted session profile computation with linear decay ($w_i = 1.0 + 0.75 \times i$) in `kanha/core/room.go` over a sliding ring buffer of 8 tracks.
+  - Resolved empty `Genre=` and `Vibe=` production bug and prevented unknown metadata from fabricating "Moderate Vibe Match" scores (routed to labeled `fallbackMatches`).
+  - Added session vibe update on successful autoplay playback (`r.Play()`) in `kanha/modules/call.go`.
+  - Added structured diagnostic logging for analysis, candidate matching, and rejections.
+  - Hardened provider download pipelines (`OneGrab` and `AloneMusic`) against HTML error pages and JSON error payloads.
+- [x] Verified full Linux test suite passes:
+  - `kanha/platforms`: 7/7 PASSED (1.05s)
+  - `kanha/core/models`: 6/6 PASSED (0.02s)
+  - `kanha/modules`: 26/26 PASSED (10.08s)
+- [x] Verified production Linux CGO build passes with code 0 (`CGO_ENABLED=1 go build -v -trimpath -ldflags="-w -s" -o app ./cmd/app/`), generating 80MB stripped ELF binary.
+- [x] Maintained persistent context documents (`KIWI_PROJECT_CONTEXT.md`, `KIWI_NEXT_STEPS.md`).
 
 ## 2. Incomplete Tasks / Remaining Items
 - [ ] End-to-end testing with a live Telegram bot instance in voice chat.
 - [ ] (Optional) Add a custom TTF font file at `assets/nowplaying/fonts/music.ttf` if the user prefers a distinct custom typeface beyond the default Go Bold typography.
 
 ## 3. Current Errors
-- **None.** The full production Linux CGO build (`CGO_ENABLED=1 go build -v -trimpath -ldflags="-w -s" -o app ./cmd/app/`) passes completely with exit code 0, successfully linking `libntgcalls.a` and `libtdjson.so.1.8.66`.
+- **None.** The full production Linux CGO build passes completely with exit code 0, linking `libntgcalls.a` and `libtdjson.so.1.8.66`.
 
 ## 4. Exact Next Actions for Future AI Sessions
 1. First read:
    - `KIWI_PROJECT_CONTEXT.md`
-   - `KIWI_NOWPLAYING_IMPLEMENTATION.md`
    - `KIWI_NEXT_STEPS.md`
 2. Check `git status` to verify working branch state.
-3. If running the bot in Docker, use the commands below.
-4. If modifying any Now Playing rendering logic, update coordinates and tests in `kanha/modules/nowplaying.go`.
+3. If running tests on Linux/WSL:
+   ```bash
+   go test -v ./kanha/core/models
+   CGO_LDFLAGS="-L/home/dell/build -lntgcalls -lm -lz -lresolv" go test -v ./kanha/platforms
+   CGO_LDFLAGS="-L/home/dell/build -lntgcalls -lm -lz -lresolv" go test -v ./kanha/modules
+   ```
+4. If building production binary:
+   ```bash
+   CGO_ENABLED=1 go build -v -trimpath -ldflags="-w -s" -o app ./cmd/app/
+   ```
 
 ## 5. Commands to Run
 
 ### Format Code:
 ```bash
-gofmt -w kanha/modules/nowplaying.go kanha/modules/play.go kanha/modules/helpers.go kanha/core/models/models.go
+gofmt -w kanha/core/models/vibe.go kanha/core/room.go kanha/modules/call.go kanha/platforms/onegrab.go kanha/platforms/alonemusic.go
 ```
 
 ### Build Docker Container (Production Linux Environment):
@@ -55,18 +69,11 @@ docker build -t kiwi-music .
 docker run --env-file .env kiwi-music
 ```
 
-### Local Linux Build (if on Linux VPS / Debian / Ubuntu):
-```bash
-chmod +x install.sh
-./install.sh
-CGO_ENABLED=1 go build -v -trimpath -ldflags="-w -s" -o app ./cmd/app/
-./app
-```
-
 ## 6. Files to Inspect Before Continuing
-- `kanha/modules/nowplaying.go`
-- `kanha/modules/helpers.go`
-- `kanha/modules/play.go`
-- `kanha/core/models/models.go`
-- `assets/nowplaying/Neon Kiwi Music Bot Template.png`
-
+- `kanha/core/models/vibe.go`
+- `kanha/core/models/vibe_test.go`
+- `kanha/core/room.go`
+- `kanha/modules/call.go`
+- `kanha/modules/autoplay_test.go`
+- `kanha/platforms/onegrab.go`
+- `kanha/platforms/alonemusic.go`

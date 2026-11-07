@@ -537,6 +537,9 @@ func playTracksAndRespond(
 			return err
 		}
 
+		logger.Infof("[Playback] Playback started: TrackID=%s | Title=%q | Artist=%q | Source=%s | File=%s | FileUniqueID=%s | CacheMatchReason=%s",
+			track.ID, track.Title, track.Artist, track.Source, filePath, track.FileUniqueID, track.CacheMatchReason)
+
 		if i == 0 && (!isActive || force) && transGen != 0 {
 			r.SetActiveTrackGen(transGen)
 			r.UpdateSessionVibeFromTrack(track)

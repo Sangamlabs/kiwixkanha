@@ -392,8 +392,8 @@ func (o *OneGrabPlatform) downloadMedia(
 	}
 
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
-	if strings.Contains(contentType, "application/json") {
-		return errors.New("CDN returned JSON instead of media")
+	if strings.Contains(contentType, "application/json") || strings.Contains(contentType, "text/html") || strings.Contains(contentType, "text/plain") {
+		return fmt.Errorf("CDN returned non-media content type (%s) instead of media", contentType)
 	}
 
 	if err := saveOneGrabResponse(resp.Body, path); err != nil {
@@ -620,6 +620,19 @@ func validateOneGrabFile(path string) error {
 
 	if info.Size() < oneGrabMinFileSize {
 		return errors.New("onegrab: downloaded file is empty or too small")
+	}
+
+	f, err := os.Open(path)
+	if err == nil {
+		buf := make([]byte, 512)
+		n, _ := f.Read(buf)
+		_ = f.Close()
+		if n > 0 {
+			lower := strings.ToLower(string(buf[:n]))
+			if strings.Contains(lower, "<html") || strings.Contains(lower, "<!doctype") || strings.Contains(lower, "{\"error\"") {
+				return errors.New("onegrab: downloaded file contains HTML or error payload")
+			}
+		}
 	}
 
 	return nil
