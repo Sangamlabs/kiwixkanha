@@ -46,6 +46,7 @@ RUN curl -fL \
     chmod 0755 /usr/local/bin/deno && \
     rm -f /tmp/deno-install.sh
 
+ENV PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
 ENV LD_LIBRARY_PATH=/app:$LD_LIBRARY_PATH
 ENV TDJSON_PATH=/app/libtdjson.so.1.8.66
 

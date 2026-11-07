@@ -140,6 +140,14 @@ func (y *YtdlpPlatform) CanDownload(source state.PlatformName) bool {
 	return source == PlatformYtDlp || source == PlatformYouTube
 }
 
+const (
+	defaultAudioFormatSelector  = "ba[abr>=180][abr<=360]/ba/b[abr>=128]/ba*/b/best"
+	fallbackAudioFormatSelector = "bestaudio/best"
+
+	defaultVideoFormatSelector  = "(b[height>=360][height<=1080]/bv*[height>=360][height<=1080]/bv*)+(ba[abr>=180][abr<=360]/ba/ba*)/b[height<=1080]/bv*+ba/b/best"
+	fallbackVideoFormatSelector = "bestvideo*+bestaudio/best"
+)
+
 func (y *YtdlpPlatform) Download(
 	ctx context.Context,
 	track *state.Track,
@@ -155,6 +163,13 @@ func (y *YtdlpPlatform) Download(
 		return "", errUnsafeURL
 	}
 
+	primaryFormat := defaultAudioFormatSelector
+	fallbackFormat := fallbackAudioFormatSelector
+	if track.Video {
+		primaryFormat = defaultVideoFormatSelector
+		fallbackFormat = fallbackVideoFormatSelector
+	}
+
 	args := []string{
 		"--no-playlist",
 		"--no-part",
@@ -164,15 +179,11 @@ func (y *YtdlpPlatform) Download(
 		"--no-check-certificate",
 		"-q",
 		"-o", getPath(track, ".%(ext)s"),
+		"-f", primaryFormat,
 	}
 
-	if track.Video {
+	if !track.Video {
 		args = append(args,
-			"-f", "(b[height>=360][height<=1080]/bv*[height>=360][height<=1080]/bv*)+(ba[abr>=180][abr<=360]/ba)/b",
-		)
-	} else {
-		args = append(args,
-			"-f", "ba[abr>=180][abr<=360]/ba",
 			"-x",
 			"--concurrent-fragments", "4",
 		)
@@ -199,9 +210,32 @@ func (y *YtdlpPlatform) Download(
 			return "", err
 		}
 		errMsg := sanitizeYtDlpOutput(strings.TrimSpace(stderr.String()))
-		if usedCookie != "" {
-			logger.Warnf("[YouTube] yt-dlp download failed with cookies (%s); attempting fallback without cookies", errMsg)
+
+		// Fallback 1: If requested format is not available, retry with universal fallback format (PRESERVE cookies!)
+		if isFormatNotAvailableError(errMsg) {
+			logger.Warnf("[YouTube] yt-dlp format unavailable (%s); retrying with universal fallback format", errMsg)
+			formatFallbackArgs := replaceFormatArg(args, fallbackFormat)
+			var stdoutFormatRetry, stderrFormatRetry bytes.Buffer
+			retryCmd := exec.CommandContext(ctx, "yt-dlp", formatFallbackArgs...)
+			retryCmd.Stdout = &stdoutFormatRetry
+			retryCmd.Stderr = &stderrFormatRetry
+			if rErr := retryCmd.Run(); rErr == nil {
+				if p := findFile(track); p != "" {
+					logger.Infof("YtDlp: downloaded %s (format fallback succeeded)", p)
+					return p, nil
+				}
+			} else {
+				retryErrMsg := sanitizeYtDlpOutput(strings.TrimSpace(stderrFormatRetry.String()))
+				logger.Warnf("[YouTube] yt-dlp format fallback failed: %s", retryErrMsg)
+				errMsg = retryErrMsg
+			}
+		}
+
+		// Fallback 2: If cookies were used and a genuine authentication error occurred, retry without cookies
+		if usedCookie != "" && isCookieAuthError(errMsg) {
+			logger.Warnf("[YouTube] yt-dlp download failed with authentication error (%s); attempting fallback without cookies", errMsg)
 			noCookieArgs := filterArgs(args, "--cookies", usedCookie)
+			noCookieArgs = replaceFormatArg(noCookieArgs, fallbackFormat)
 			var stdoutRetry, stderrRetry bytes.Buffer
 			retryCmd := exec.CommandContext(ctx, "yt-dlp", noCookieArgs...)
 			retryCmd.Stdout = &stdoutRetry
@@ -257,8 +291,8 @@ func (y *YtdlpPlatform) extractMetadata(urlStr string) (*ytdlpInfo, error) {
 
 	if err := cmd.Run(); err != nil {
 		errMsg := sanitizeYtDlpOutput(strings.TrimSpace(stderr.String()))
-		if usedCookie != "" {
-			logger.Warnf("[YouTube] yt-dlp metadata extraction failed with cookies (%s); attempting fallback without cookies", errMsg)
+		if usedCookie != "" && isCookieAuthError(errMsg) {
+			logger.Warnf("[YouTube] yt-dlp metadata extraction failed with authentication error (%s); attempting fallback without cookies", errMsg)
 			noCookieArgs := filterArgs(args, "--cookies", usedCookie)
 			var stdoutRetry, stderrRetry bytes.Buffer
 			retryCmd := exec.CommandContext(ctx, "yt-dlp", noCookieArgs...)
@@ -360,6 +394,68 @@ func filterArgs(args []string, dropFlag, dropVal string) []string {
 		out = append(out, a)
 	}
 	return out
+}
+
+func replaceFormatArg(args []string, newFormat string) []string {
+	res := make([]string, 0, len(args)+2)
+	found := false
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-f" {
+			res = append(res, "-f", newFormat)
+			found = true
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(args[i], "-f=") {
+			res = append(res, "-f="+newFormat)
+			found = true
+			continue
+		}
+		res = append(res, args[i])
+	}
+	if !found {
+		dashIdx := -1
+		for i, a := range res {
+			if a == "--" {
+				dashIdx = i
+				break
+			}
+		}
+		if dashIdx >= 0 {
+			res = append(res[:dashIdx], append([]string{"-f", newFormat}, res[dashIdx:]...)...)
+		} else {
+			res = append(res, "-f", newFormat)
+		}
+	}
+	return res
+}
+
+func isFormatNotAvailableError(errMsg string) bool {
+	lower := strings.ToLower(errMsg)
+	return strings.Contains(lower, "requested format is not available") ||
+		strings.Contains(lower, "format is not available") ||
+		strings.Contains(lower, "no video formats found") ||
+		strings.Contains(lower, "no audio formats found") ||
+		strings.Contains(lower, "no suitable formats found")
+}
+
+func isCookieAuthError(errMsg string) bool {
+	lower := strings.ToLower(errMsg)
+	return strings.Contains(lower, "cookies are no longer valid") ||
+		strings.Contains(lower, "cookies are expired") ||
+		strings.Contains(lower, "invalid cookie") ||
+		strings.Contains(lower, "sign in to confirm") ||
+		strings.Contains(lower, "sign in with a different account") ||
+		strings.Contains(lower, "sign in if you've been granted access") ||
+		strings.Contains(lower, "only available to registered users") ||
+		strings.Contains(lower, "sign in to view") ||
+		strings.Contains(lower, "http error 401") ||
+		strings.Contains(lower, "http error 403") ||
+		strings.Contains(lower, "403: forbidden") ||
+		strings.Contains(lower, "403 forbidden") ||
+		strings.Contains(lower, "account has been terminated")
 }
 
 func (y *YtdlpPlatform) toTrack(info *ytdlpInfo, video bool) *state.Track {

@@ -2,6 +2,7 @@ package platforms
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -129,6 +130,125 @@ func TestSanitizeYtDlpOutput(t *testing.T) {
 		got := sanitizeYtDlpOutput(tt.input)
 		if got != tt.expected {
 			t.Errorf("sanitizeYtDlpOutput(%q) = %q, expected %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestIsFormatNotAvailableError(t *testing.T) {
+	tests := []struct {
+		err      string
+		expected bool
+	}{
+		{"ERROR: [youtube] dQw4w9WgXcQ: Requested format is not available. Use --list-formats for a list of available formats", true},
+		{"requested format is not available", true},
+		{"ERROR: format is not available for this track", true},
+		{"No video formats found", true},
+		{"No audio formats found", true},
+		{"no suitable formats found", true},
+		{"Sign in to confirm you're not a bot.", false},
+		{"HTTP Error 403: Forbidden", false},
+		{"Failed to connect to host", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		got := isFormatNotAvailableError(tt.err)
+		if got != tt.expected {
+			t.Errorf("isFormatNotAvailableError(%q) = %v, expected %v", tt.err, got, tt.expected)
+		}
+	}
+}
+
+func TestReplaceFormatArg(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		newFormat string
+		expected  []string
+	}{
+		{
+			name:      "replace separate -f and value",
+			args:      []string{"--no-part", "-f", "ba[abr>=180]/ba", "-x", "--cookies", "cookie.txt", "--", "url"},
+			newFormat: "bestaudio/best",
+			expected:  []string{"--no-part", "-f", "bestaudio/best", "-x", "--cookies", "cookie.txt", "--", "url"},
+		},
+		{
+			name:      "replace combined -f=value",
+			args:      []string{"--no-part", "-f=ba[abr>=180]/ba", "-x", "--", "url"},
+			newFormat: "bestaudio/best",
+			expected:  []string{"--no-part", "-f=bestaudio/best", "-x", "--", "url"},
+		},
+		{
+			name:      "insert before double-dash when -f missing",
+			args:      []string{"--no-part", "-x", "--", "url"},
+			newFormat: "bestaudio/best",
+			expected:  []string{"--no-part", "-x", "-f", "bestaudio/best", "--", "url"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := replaceFormatArg(tt.args, tt.newFormat)
+			if !reflect.DeepEqual(got, tt.expected) {
+				t.Errorf("replaceFormatArg() = %v, expected %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestDefaultAndFallbackFormatStrings(t *testing.T) {
+	// 1. Audio format selector must have high-tier, standard audio-only, multiplexed fallback, and best
+	if !strings.Contains(defaultAudioFormatSelector, "ba[abr>=180]") {
+		t.Errorf("defaultAudioFormatSelector missing high-tier audio check")
+	}
+	if !strings.Contains(defaultAudioFormatSelector, "/ba/") {
+		t.Errorf("defaultAudioFormatSelector missing standard ba stream")
+	}
+	if !strings.HasSuffix(defaultAudioFormatSelector, "/best") {
+		t.Errorf("defaultAudioFormatSelector missing terminal /best fallback")
+	}
+
+	// 2. Audio fallback selector must be permissive
+	if fallbackAudioFormatSelector != "bestaudio/best" {
+		t.Errorf("expected fallbackAudioFormatSelector to be 'bestaudio/best', got %q", fallbackAudioFormatSelector)
+	}
+
+	// 3. Video format selectors must include fallbacks
+	if !strings.Contains(defaultVideoFormatSelector, "/best") {
+		t.Errorf("defaultVideoFormatSelector missing /best fallback")
+	}
+	if fallbackVideoFormatSelector != "bestvideo*+bestaudio/best" {
+		t.Errorf("expected fallbackVideoFormatSelector to be 'bestvideo*+bestaudio/best', got %q", fallbackVideoFormatSelector)
+	}
+}
+
+func TestIsCookieAuthError(t *testing.T) {
+	tests := []struct {
+		err      string
+		expected bool
+	}{
+		{"ERROR: [youtube] The provided YouTube account cookies are no longer valid", true},
+		{"ERROR: [youtube] Sign in to confirm you're not a bot.", true},
+		{"Sign in with a different account", true},
+		{"HTTP Error 401: Unauthorized", true},
+		{"HTTP Error 403: Forbidden", true},
+		{"403: Forbidden", true},
+		{"403 Forbidden", true},
+		{"cookies are expired", true},
+		{"invalid cookie value", true},
+		{"Private video. Sign in if you've been granted access", true},
+		// Non-auth errors should NOT trigger cookie fallback:
+		{"ERROR: [youtube] dQw4w9WgXcQ: Requested format is not available. Use --list-formats for a list of available formats", false},
+		{"Failed to connect to host: connection refused", false},
+		{"No space left on device", false},
+		{"Process killed after timeout", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		got := isCookieAuthError(tt.err)
+		if got != tt.expected {
+			t.Errorf("isCookieAuthError(%q) = %v, expected %v", tt.err, got, tt.expected)
 		}
 	}
 }
