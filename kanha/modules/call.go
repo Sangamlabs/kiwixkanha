@@ -23,6 +23,7 @@ import (
 	"math/big"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"KanhaMusic/kanha/logger"
@@ -35,7 +36,50 @@ import (
 	"KanhaMusic/ntgcalls"
 )
 
-var autoplayHistory sync.Map
+var (
+	autoplayHistory sync.Map
+	failedTracks    sync.Map // videoID -> time.Time
+	chatWorkers     sync.Map // chatID -> *chatWorker
+)
+
+const failedTracksTTL = 10 * time.Minute
+
+type chatWorker struct {
+	busy atomic.Bool
+}
+
+func getChatWorker(chatID int64) *chatWorker {
+	val, ok := chatWorkers.Load(chatID)
+	if !ok {
+		w := &chatWorker{}
+		actual, _ := chatWorkers.LoadOrStore(chatID, w)
+		return actual.(*chatWorker)
+	}
+	return val.(*chatWorker)
+}
+
+func markTrackFailed(videoID string) {
+	if videoID == "" {
+		return
+	}
+	failedTracks.Store(videoID, time.Now())
+}
+
+func isTrackFailedRecently(videoID string) bool {
+	if videoID == "" {
+		return false
+	}
+	val, ok := failedTracks.Load(videoID)
+	if !ok {
+		return false
+	}
+	failedAt := val.(time.Time)
+	if time.Since(failedAt) > failedTracksTTL {
+		failedTracks.Delete(videoID)
+		return false
+	}
+	return true
+}
 
 func getChatHistoryMap(chatID int64) *sync.Map {
 	val, ok := autoplayHistory.Load(chatID)
@@ -96,9 +140,17 @@ func streamEndHandler(
 		return
 	}
 
-	logger.Debugf("[onStreamEndHandler] Stream ended in chat %d", chatID)
+	worker := getChatWorker(chatID)
+	if !worker.busy.CompareAndSwap(false, true) {
+		logger.Infof("[Autoplay] Duplicate trigger ignored")
+		return
+	}
+	defer worker.busy.Store(false)
+
+	logger.Infof("[Autoplay] Worker started")
+
 	r, ok := core.RoomFor(chatID)
-	if !ok {
+	if !ok || r.Destroyed() {
 		return
 	}
 	scheduleOldPlayingMessage(r)
@@ -130,6 +182,8 @@ func streamEndHandler(
 		wasLooping = true
 	}
 
+	logger.Infof("[Autoplay] Queue candidate selected: %s", t.Title)
+
 	statusText := F(cid, "stream_downloading_next")
 	if isAutoplay {
 		statusText = F(cid, "stream_autoplay_next", locales.Arg{
@@ -149,7 +203,10 @@ func streamEndHandler(
 	if wasLooping && t != nil && r.FilePath() != "" {
 		filePath = r.FilePath()
 	} else {
-		const maxRetries = 5
+		// Parallel thumbnail preparation for the candidate
+		StartNowPlayingPreparation(context.Background(), c, chatID, t, nil)
+
+		const maxRetries = 4
 		const downloadTimeout = 60 * time.Second
 		for attempt := 0; attempt < maxRetries; attempt++ {
 			dlCtx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
@@ -158,16 +215,30 @@ func streamEndHandler(
 			if dlErr == nil {
 				break
 			}
+
+			// Record failure so candidate is not repeated
+			markTrackFailed(t.ID)
+			apMarkPlayed(chatID, t.ID)
+
 			if isAutoplay {
-				logger.Warnf("[Autoplay] Download failed (attempt %d/%d) for %q: %v — trying next candidate", attempt+1, maxRetries, t.Title, dlErr)
 				nextT := pickAutoplayCandidate(chatID, t)
 				if nextT == nil {
 					break
 				}
 				nextT.Requester = "🎵 ᴀᴜᴛᴏᴘʟᴀʏ"
 				t = nextT
+				logger.Infof("[Autoplay] Queue candidate selected: %s", t.Title)
+				StartNowPlayingPreparation(context.Background(), c, chatID, t, nil)
 			} else {
-				break
+				// If manual queued track failed on all providers, try next queued track if available
+				if nextQueued := r.NextTrack(); nextQueued != nil {
+					logger.Warnf("[Autoplay] Queued track failed on all providers; moving to next candidate: %s", nextQueued.Title)
+					t = nextQueued
+					logger.Infof("[Autoplay] Queue candidate selected: %s", t.Title)
+					StartNowPlayingPreparation(context.Background(), c, chatID, t, nil)
+				} else {
+					break
+				}
 			}
 		}
 	}
@@ -186,6 +257,7 @@ func streamEndHandler(
 		return
 	}
 
+	logger.Infof("[Autoplay] Starting playback")
 	if err := r.Play(t, filePath, true); err != nil {
 		logger.Errorf(
 			"[onStreamEndHandler] Play failed for %s: %v",
@@ -202,6 +274,7 @@ func streamEndHandler(
 	r.SetStatusMsg(statusMsg)
 
 	if isAutoplay {
+		logger.Infof("[Autoplay] Track retained; thumbnail failure does not affect playback")
 		go sendAutoplayLogs(c, cid, t, statusMsg)
 	}
 }
@@ -235,7 +308,7 @@ func pickAutoplayCandidate(chatID int64, cur *state.Track) *state.Track {
 			if i >= 15 {
 				break
 			}
-			if t.ID != "" && t.ID != cur.ID && !apIsPlayed(chatID, t.ID) {
+			if t.ID != "" && t.ID != cur.ID && !apIsPlayed(chatID, t.ID) && !isTrackFailedRecently(t.ID) {
 				candidates = append(candidates, t)
 			}
 		}
@@ -247,7 +320,7 @@ func pickAutoplayCandidate(chatID int64, cur *state.Track) *state.Track {
 		query := fmt.Sprintf("%s similar songs", cleanTitle)
 		if searchTracks, sErr := platforms.SearchTracks(query, false); sErr == nil && len(searchTracks) > 0 {
 			for _, t := range searchTracks {
-				if t.ID != "" && t.ID != cur.ID && !apIsPlayed(chatID, t.ID) {
+				if t.ID != "" && t.ID != cur.ID && !apIsPlayed(chatID, t.ID) && !isTrackFailedRecently(t.ID) {
 					candidates = append(candidates, t)
 				}
 			}

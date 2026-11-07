@@ -20,6 +20,8 @@ package platforms
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,9 +33,9 @@ import (
 	td "github.com/Kanha/Meow"
 	"resty.dev/v3"
 
+	"KanhaMusic/config"
 	state "KanhaMusic/kanha/core/models"
 	"KanhaMusic/kanha/utils"
-	"KanhaMusic/config"
 )
 
 type reg struct {
@@ -111,6 +113,26 @@ func GetTracks(c *td.Client, m *td.Message, video bool) ([]*state.Track, error) 
 	return nil, errors.New("no tracks found")
 }
 
+const minPlayableAudioBytes = 32 * 1024 // 32 KB minimum valid audio/video file
+
+// ValidateAudioFile checks if the downloaded file exists, is non-empty and has reasonable size.
+func ValidateAudioFile(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("empty file path")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("media file not found: %w", err)
+	}
+	if info.IsDir() {
+		return errors.New("media file path points to a directory")
+	}
+	if info.Size() < minPlayableAudioBytes {
+		return fmt.Errorf("media file too small or empty (%d bytes, min required %d)", info.Size(), minPlayableAudioBytes)
+	}
+	return nil
+}
+
 // Download fetches the given track and returns its local file path.
 // It tries every registered platform that can download the track's source,
 // in priority order, and returns the first successful file path.
@@ -119,29 +141,74 @@ func Download(
 	track *state.Track,
 	msg *td.Message,
 ) (string, error) {
+	if track == nil {
+		return "", errors.New("nil track provided for download")
+	}
+
 	var errs []string
+	const perProviderTimeout = 25 * time.Second
 
 	for _, p := range ordered() {
 		if !p.CanDownload(track.Source) {
 			continue
 		}
 
-		logger.Debug("Download attempt: " + string(p.Name()))
-		path, err := p.Download(ctx, track, msg)
-		if err == nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+
+		pCtx, pCancel := context.WithTimeout(ctx, perProviderTimeout)
+		if track.IsAutoplay {
+			logger.Infof("[Autoplay] Download started via %s", p.Name())
+		} else {
+			logger.Debug("Download attempt: " + string(p.Name()))
+		}
+
+		path, err := p.Download(pCtx, track, msg)
+		pCancel()
+
+		if err != nil {
+			// Check if caller's root context was cancelled (e.g. user ran /stop or /skip)
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+
+			if track.IsAutoplay {
+				logger.Warnf("[Autoplay] Provider failed: %s | Reason: %v", p.Name(), err)
+				logger.Infof("[Autoplay] Trying next provider")
+			} else {
+				logger.Warnf("Provider %s failed for %q: %v", p.Name(), track.Title, err)
+			}
+			errs = append(errs, string(p.Name())+": "+err.Error())
+			continue
+		}
+
+		// Validate downloaded file
+		if valErr := ValidateAudioFile(path); valErr != nil {
+			_ = os.Remove(path)
+			if track.IsAutoplay {
+				logger.Warnf("[Autoplay] Provider failed: %s | Reason: %v", p.Name(), valErr)
+				logger.Infof("[Autoplay] Trying next provider")
+			} else {
+				logger.Warnf("Provider %s validation failed: %v", p.Name(), valErr)
+			}
+			errs = append(errs, string(p.Name())+": "+valErr.Error())
+			continue
+		}
+
+		if track.IsAutoplay {
+			logger.Infof("[Autoplay] Download validated successfully")
+		} else {
 			logger.Info("Download ok via " + string(p.Name()) + " -> " + path)
-			return path, nil
 		}
-
-		if isDownloadCancelled(err) {
-			return "", err
-		}
-
-		errs = append(errs, string(p.Name())+": "+err.Error())
+		return path, nil
 	}
 
 	if len(errs) > 0 {
-		return "", combineErrs("download failed", errs)
+		if track.IsAutoplay {
+			logger.Warnf("[Autoplay] Track failed on all providers; moving to next candidate")
+		}
+		return "", combineErrs("download failed on all eligible providers", errs)
 	}
 	return "", errors.New("no downloader for source: " + string(track.Source))
 }
@@ -333,4 +400,3 @@ func SearchTracks(query string, video bool) ([]*state.Track, error) {
 	yt := ytRaw.(*YouTubePlatform)
 	return yt.VideoSearch(query)
 }
-

@@ -302,7 +302,7 @@ func handleSkipAction(c *td.Client, u *td.UpdateNewCallbackQuery, r *core.RoomSt
 	statusMsg = sendNowPlaying(c, statusMsg, chatID, r, t)
 	r.SetStatusMsg(statusMsg)
 
-_, err = statusMsg.ReplyText(c, F(chatID, "cb_skip_edited", locales.Arg{
+	_, err = statusMsg.ReplyText(c, F(chatID, "cb_skip_edited", locales.Arg{
 		"user": mentionOfSender(c, u.SenderUserId),
 	}), &td.SendTextMessageOpts{ParseMode: "HTML"})
 
@@ -508,4 +508,3 @@ func updatePlaybackMessage(c *td.Client, u *td.UpdateNewCallbackQuery, r *core.R
 		logger.Errorf("Edit error: %v", err)
 	}
 }
-

@@ -28,8 +28,8 @@ import (
 	tg "github.com/amarnathcjd/gogram/telegram"
 
 	"KanhaMusic/kanha/core"
-	"KanhaMusic/kanha/locales"
 	"KanhaMusic/kanha/database"
+	"KanhaMusic/kanha/locales"
 	"KanhaMusic/kanha/logger"
 	"KanhaMusic/kanha/utils"
 )

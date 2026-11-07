@@ -67,9 +67,9 @@ type RoomState struct {
 	queue   []*state.Track // upcoming tracks
 	shuffle bool           // queue shuffle mode
 
-	autoplay      bool           // auto-play recommendations when the queue ends
-	playedHistory []string       // ring buffer of recent track IDs and normalized titles
-	engineToken   string         // cryptographic session verification token for autoplay
+	autoplay      bool     // auto-play recommendations when the queue ends
+	playedHistory []string // ring buffer of recent track IDs and normalized titles
+	engineToken   string   // cryptographic session verification token for autoplay
 
 	statusMsg *td.Message // latest status message in chat
 

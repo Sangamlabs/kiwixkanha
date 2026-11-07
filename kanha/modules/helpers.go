@@ -99,7 +99,9 @@ func sendNowPlaying(
 
 	// If thumbnails are disabled via /nothumb, respect the setting and use fallback (text-only)
 	if !shouldShowThumb(chatID) {
-		return showTrackMessage(c, statusMsg, chatID, r, t, msgText, false)
+		fallbackMsg := showTrackMessage(c, statusMsg, chatID, r, t, msgText, false)
+		logger.Infof("[NowPlaying] Legacy thumbnail fallback sent successfully")
+		return fallbackMsg
 	}
 
 	// Try custom Kiwi Music Now Playing thumbnail
@@ -108,7 +110,9 @@ func sendNowPlaying(
 	}
 
 	// Reliable fallback to the existing Now Playing implementation
-	return showTrackMessage(c, statusMsg, chatID, r, t, msgText, false)
+	fallbackMsg := showTrackMessage(c, statusMsg, chatID, r, t, msgText, false)
+	logger.Infof("[NowPlaying] Legacy thumbnail fallback sent successfully")
+	return fallbackMsg
 }
 
 // trySendCustomNowPlaying attempts to obtain the generated custom image (either from
@@ -127,9 +131,13 @@ func trySendCustomNowPlaying(
 
 	// 1. Check if a parallel task was already started
 	if task := GetActiveNowPlayingTask(chatID, t.ID); task != nil {
-		imagePath, err = task.Wait(2 * time.Second)
+		imagePath, err = task.Wait(3 * time.Second)
 		if err != nil {
-			logger.Debugf("[NowPlaying] Parallel task error/timeout for track %s: %v; falling back", t.ID, err)
+			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "timeout") {
+				logger.Warnf("[NowPlaying] WARNING: Custom thumbnail preparation timed out. Using legacy fallback.")
+			} else {
+				logger.Warnf("[NowPlaying] WARNING: Custom thumbnail failed. Using legacy thumbnail fallback. Reason: %v", err)
+			}
 		}
 	}
 
@@ -137,6 +145,7 @@ func trySendCustomNowPlaying(
 	if imagePath == "" {
 		data := NowPlayingData{
 			SongTitle:     t.Title,
+			Requester:     t.Requester,
 			RequesterName: t.RequesterName,
 			RequesterID:   t.RequesterID,
 			ArtworkURL:    t.Artwork,
@@ -147,15 +156,21 @@ func trySendCustomNowPlaying(
 		imagePath, err = GenerateNowPlayingImage(ctx, c, data)
 		cancel()
 		if err != nil {
-			logger.Debugf("[NowPlaying] Custom image generation failed for track %s: %v; falling back", t.ID, err)
+			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "timeout") {
+				logger.Warnf("[NowPlaying] WARNING: Custom thumbnail preparation timed out. Using legacy fallback.")
+			} else {
+				logger.Warnf("[NowPlaying] WARNING: Custom thumbnail failed. Using legacy thumbnail fallback. Reason: %v", err)
+			}
 			return nil
 		}
 	}
 
 	if imagePath == "" {
+		logger.Warnf("[NowPlaying] WARNING: Custom thumbnail failed. Using legacy thumbnail fallback. Reason: empty image path")
 		return nil
 	}
 
+	logger.Infof("[NowPlaying] Sending custom thumbnail to Telegram")
 	markup := core.GetPlayMarkup(chatID, r, false)
 
 	// 3. Try editing existing status message with the new local photo
@@ -192,7 +207,8 @@ func trySendCustomNowPlaying(
 		},
 	)
 	if err != nil {
-		logger.Warnf("[NowPlaying] SendPhoto with custom image failed: %v; will use old fallback", err)
+		logger.Errorf("[NowPlaying] ERROR: Telegram failed to send custom thumbnail: %v", err)
+		logger.Warnf("[NowPlaying] WARNING: Custom thumbnail failed. Using legacy thumbnail fallback. Reason: %v", err)
 		return nil
 	}
 

@@ -7,6 +7,7 @@ package modules
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -247,5 +248,64 @@ func TestApplyRoundedCornersAndCircleMask(t *testing.T) {
 	_, _, _, a := circle.At(0, 0).RGBA()
 	if a != 0 {
 		t.Errorf("Expected circle corner alpha 0, got %d", a)
+	}
+}
+
+// TestArtworkDownloadFailure verifies that missing or unreachable artwork fails gracefully.
+func TestArtworkDownloadFailure(t *testing.T) {
+	data := NowPlayingData{
+		SongTitle:     "Missing Artwork Song",
+		RequesterName: "TestUser",
+		ArtworkURL:    "http://127.0.0.1:49999/does_not_exist.png",
+		Duration:      120,
+		TrackID:       "art_fail_track",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	path, err := GenerateNowPlayingImage(ctx, nil, data)
+	if err == nil {
+		os.Remove(path)
+		t.Fatal("Expected error on missing artwork, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "song artwork") {
+		t.Errorf("Expected artwork failure error, got: %v", err)
+	}
+}
+
+// TestPreparationTimeout verifies that an expired context causes task wait timeout.
+func TestPreparationTimeout(t *testing.T) {
+	task := &NowPlayingTask{
+		TrackID: "timeout_track",
+		ChatID:  12345,
+		Done:    make(chan struct{}),
+	}
+
+	_, err := task.Wait(50 * time.Millisecond)
+	if err == nil {
+		t.Fatal("Expected timeout error from task.Wait, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(strings.ToLower(err.Error()), "timeout") {
+		t.Errorf("Expected timeout error, got: %v", err)
+	}
+}
+
+// TestCustomNowPlayingFallbackConditions verifies that when custom rendering is unavailable,
+// trySendCustomNowPlaying returns nil, allowing sendNowPlaying to fall back to legacy message.
+func TestCustomNowPlayingFallbackConditions(t *testing.T) {
+	track := &state.Track{
+		ID:        "fallback_verify_track",
+		Title:     "Fallback Track",
+		Duration:  180,
+		Artwork:   "http://127.0.0.1:49999/missing.jpg",
+		Requester: "Test",
+	}
+
+	// trySendCustomNowPlaying with invalid artwork should fail and return nil
+	msg := trySendCustomNowPlaying(nil, nil, 999999, nil, track, "test caption")
+	if msg != nil {
+		t.Error("Expected nil return from trySendCustomNowPlaying on failure so fallback occurs, got non-nil")
 	}
 }

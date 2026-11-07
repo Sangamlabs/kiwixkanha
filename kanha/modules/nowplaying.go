@@ -91,9 +91,8 @@ var (
 	htmlTagRegex = regexp.MustCompile(`<[^>]*>`)
 
 	// Template cache
-	templateOnce   sync.Once
+	templateMu     sync.RWMutex
 	cachedTemplate *image.RGBA
-	templateErr    error
 
 	// Font cache
 	fontOnce       sync.Once
@@ -180,6 +179,18 @@ func locateTemplate() (string, error) {
 		filepath.Join("assets", "nowplaying", "Neon Kiwi Music Bot Template.png"),
 		filepath.Join("assets", "nowplaying", "template.png"),
 		filepath.Join("..", "assets", "nowplaying", "Neon Kiwi Music Bot Template.png"),
+		filepath.Join("..", "..", "assets", "nowplaying", "Neon Kiwi Music Bot Template.png"),
+		filepath.Join("..", "..", "assets", "nowplaying", "template.png"),
+		filepath.Join("/app", "assets", "nowplaying", "Neon Kiwi Music Bot Template.png"),
+		filepath.Join("/app", "assets", "nowplaying", "template.png"),
+	}
+
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(exeDir, "assets", "nowplaying", "Neon Kiwi Music Bot Template.png"),
+			filepath.Join(exeDir, "assets", "nowplaying", "template.png"),
+		)
 	}
 
 	for _, c := range candidates {
@@ -190,37 +201,42 @@ func locateTemplate() (string, error) {
 	return "", fmt.Errorf("kiwi music template image not found in assets/nowplaying")
 }
 
-// loadCachedTemplate loads and decodes the template PNG once into memory.
+// loadCachedTemplate loads and decodes the template PNG into memory.
 func loadCachedTemplate() (*image.RGBA, error) {
-	templateOnce.Do(func() {
-		path, err := locateTemplate()
-		if err != nil {
-			templateErr = err
-			return
-		}
-
-		f, err := os.Open(path)
-		if err != nil {
-			templateErr = fmt.Errorf("failed to open template: %w", err)
-			return
-		}
-		defer f.Close()
-
-		decoded, err := png.Decode(f)
-		if err != nil {
-			templateErr = fmt.Errorf("failed to decode template PNG: %w", err)
-			return
-		}
-
-		b := decoded.Bounds()
-		cachedTemplate = image.NewRGBA(b)
-		draw.Draw(cachedTemplate, b, decoded, b.Min, draw.Src)
-		logger.Infof("[NowPlaying] Loaded and cached Kiwi Music template (%dx%d)", b.Dx(), b.Dy())
-	})
-
-	if templateErr != nil {
-		return nil, templateErr
+	templateMu.RLock()
+	if cachedTemplate != nil {
+		res := cachedTemplate
+		templateMu.RUnlock()
+		return res, nil
 	}
+	templateMu.RUnlock()
+
+	templateMu.Lock()
+	defer templateMu.Unlock()
+	if cachedTemplate != nil {
+		return cachedTemplate, nil
+	}
+
+	path, err := locateTemplate()
+	if err != nil {
+		return nil, err
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open template: %w", err)
+	}
+	defer f.Close()
+
+	decoded, err := png.Decode(f)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode template PNG: %w", err)
+	}
+
+	b := decoded.Bounds()
+	cachedTemplate = image.NewRGBA(b)
+	draw.Draw(cachedTemplate, b, decoded, b.Min, draw.Src)
+	logger.Infof("[NowPlaying] Template loaded successfully from %s (%dx%d)", path, b.Dx(), b.Dy())
 	return cachedTemplate, nil
 }
 
@@ -287,14 +303,19 @@ func GenerateNowPlayingImage(
 	c *td.Client,
 	data NowPlayingData,
 ) (string, error) {
+	logger.Infof("[NowPlaying] Starting custom thumbnail generation: track=%q", data.SongTitle)
+
 	// 1. Load cached template
 	tpl, err := loadCachedTemplate()
 	if err != nil {
+		logger.Errorf("[NowPlaying] ERROR: Stage 'Template' failed for track %q: %v", data.SongTitle, err)
 		return "", fmt.Errorf("template unavailable: %w", err)
 	}
+	logger.Infof("[NowPlaying] Template loaded successfully")
 
 	// 2. Initialize fonts
 	if err := initFonts(); err != nil {
+		logger.Errorf("[NowPlaying] ERROR: Stage 'Fonts' failed for track %q: %v", data.SongTitle, err)
 		return "", fmt.Errorf("fonts unavailable: %w", err)
 	}
 
@@ -306,10 +327,10 @@ func GenerateNowPlayingImage(
 	// 4. Download and draw song artwork in square frame
 	artImg, err := fetchArtwork(ctx, data.ArtworkURL)
 	if err != nil {
-		logger.Warnf("[NowPlaying] Failed to fetch artwork %q: %v", data.ArtworkURL, err)
-		// Artwork failure will cause caller to fallback to old Now Playing system
+		logger.Errorf("[NowPlaying] ERROR: Stage 'Artwork' failed for track %q: %v", data.SongTitle, err)
 		return "", fmt.Errorf("failed to fetch song artwork: %w", err)
 	}
+	logger.Infof("[NowPlaying] Artwork downloaded successfully")
 
 	squareArt := cropCenterAndResize(artImg, artworkTargetSize, artworkTargetSize)
 	maskedArt := applyRoundedCorners(squareArt, artworkCornerR)
@@ -323,6 +344,7 @@ func GenerateNowPlayingImage(
 
 	// 5. Fetch or generate requester profile photo in circular frame
 	profileImg := fetchOrGenerateProfilePhoto(ctx, c, data.RequesterID, data.RequesterName)
+	logger.Infof("[NowPlaying] Requester profile photo loaded")
 	maskedProfile := applyCircularMask(profileImg)
 	profX := profileCenterRelX - profileTargetSize/2
 	profY := profileCenterRelY - profileTargetSize/2
@@ -360,15 +382,18 @@ func GenerateNowPlayingImage(
 	outPath := generateOutputPath(data.TrackID)
 	outF, err := os.Create(outPath)
 	if err != nil {
+		logger.Errorf("[NowPlaying] ERROR: Stage 'Save' failed for track %q: %v", data.SongTitle, err)
 		return "", fmt.Errorf("failed to create output file: %w", err)
 	}
 	defer outF.Close()
 
 	if err := png.Encode(outF, canvas); err != nil {
 		_ = os.Remove(outPath)
+		logger.Errorf("[NowPlaying] ERROR: Stage 'Encode' failed for track %q: %v", data.SongTitle, err)
 		return "", fmt.Errorf("failed to encode output PNG: %w", err)
 	}
 
+	logger.Infof("[NowPlaying] Custom image rendered successfully at %s", outPath)
 	return outPath, nil
 }
 

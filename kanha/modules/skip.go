@@ -271,13 +271,15 @@ func handleAutoplaySkip(c *td.Client, m *td.Message, cplay bool) error {
 		}
 		return nil
 	}
+	logger.Infof("[Autoplay] Queue candidate selected: %s", next.Title)
+	StartNowPlayingPreparation(context.Background(), c, chatID, next, nil)
 
 	r.SetLoop(0)
 	scheduleOldPlayingMessage(r)
 
 	var path string
 	var dlErr error
-	const maxRetries = 5
+	const maxRetries = 4
 	const downloadTimeout = 60 * time.Second
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		dlCtx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
@@ -286,12 +288,16 @@ func handleAutoplaySkip(c *td.Client, m *td.Message, cplay bool) error {
 		if dlErr == nil {
 			break
 		}
+		markTrackFailed(next.ID)
+		apMarkPlayed(chatID, next.ID)
 		logger.Warnf("[Autoplay] /askip download failed (attempt %d/%d) for %q: %v — trying next candidate", attempt+1, maxRetries, next.Title, dlErr)
 		nextT := pickAutoplayCandidate(chatID, next)
 		if nextT == nil {
 			break
 		}
 		next = nextT
+		logger.Infof("[Autoplay] Queue candidate selected: %s", next.Title)
+		StartNowPlayingPreparation(context.Background(), c, chatID, next, nil)
 	}
 
 	if dlErr != nil {
@@ -308,6 +314,7 @@ func handleAutoplaySkip(c *td.Client, m *td.Message, cplay bool) error {
 		return nil
 	}
 
+	logger.Infof("[Autoplay] Starting playback")
 	if err := r.Play(next, path, true); err != nil {
 		txt := F(chatID, "stream_play_fail")
 		if statusMsg != nil {
@@ -325,8 +332,8 @@ func handleAutoplaySkip(c *td.Client, m *td.Message, cplay bool) error {
 		r.SetStatusMsg(statusMsg)
 	}
 
+	logger.Infof("[Autoplay] Track retained; thumbnail failure does not affect playback")
 	go sendAutoplayLogs(c, chatID, next, statusMsg)
 
 	return nil
 }
-

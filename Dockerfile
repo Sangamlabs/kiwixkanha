@@ -57,6 +57,7 @@ WORKDIR /app
 COPY --from=builder /build/app /app/app
 COPY --from=builder /build/libtdjson.so* /app/
 COPY --from=builder /build/config/cookies /app/config/cookies
+COPY --from=builder /build/assets /app/assets
 RUN chmod 0755 /app/libtdjson.so* && chown -R appuser:appuser /app
 
 USER appuser

@@ -108,8 +108,8 @@ func startCB(c *td.Client, cb *td.UpdateNewCallbackQuery) error {
 		Photo: &td.InputPhoto{
 			Photo: td.InputFileRemote{Id: config.StartImage()},
 		},
-		Caption: formattedCaption,
-		HasSpoiler:  true,
+		Caption:    formattedCaption,
+		HasSpoiler: true,
 	}
 
 	_, err = c.EditMessageMedia(cb.ChatId, content, msg.Id, &td.EditMessageMediaOpts{

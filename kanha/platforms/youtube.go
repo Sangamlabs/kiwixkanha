@@ -245,12 +245,12 @@ func (p *YouTubePlatform) handleTrackURL(rawURL string) ([]*state.Track, error) 
 			}
 		}
 	}
-    
-    	if t, err := p.fetchTrackViaOEmbed(videoID); err == nil && t != nil {
+
+	if t, err := p.fetchTrackViaOEmbed(videoID); err == nil && t != nil {
 		p.cache.Set("track:"+videoID, []*state.Track{t})
 		return []*state.Track{t}, nil
 	}
-    
+
 	return nil, errors.New("track not found")
 }
 

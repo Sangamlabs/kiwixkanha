@@ -1,4 +1,3 @@
-
 /*
  * AloneMusic API downloader for Kiwi Music.
  *

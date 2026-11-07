@@ -54,7 +54,7 @@ func init() {
 }
 
 func (m *MeowApiPlatform) Name() state.PlatformName { return PlatformMeowApi }
-func (m *MeowApiPlatform) Priority() int             { return 85 }
+func (m *MeowApiPlatform) Priority() int            { return 85 }
 
 func (m *MeowApiPlatform) CanGet(_ string) bool { return false }
 
@@ -137,7 +137,7 @@ func (m *MeowApiPlatform) Download(
 
 const (
 	PlatformSpotify state.PlatformName = "Spotify"
-	spotifyUA                           = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+	spotifyUA                          = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 )
 
 type SpotifyPlatform struct {
@@ -151,7 +151,7 @@ var (
 	spotifyNextDataRe = regexp.MustCompile(
 		`(?s)<script id="__NEXT_DATA__" type="application/json">(.*?)</script>`,
 	)
-	spotifyHTTP  = &http.Client{Timeout: 15 * time.Second}
+	spotifyHTTP = &http.Client{Timeout: 15 * time.Second}
 )
 
 func init() {
@@ -446,7 +446,7 @@ var (
 	deezerEntityRe = regexp.MustCompile(
 		`(?i)deezer\.com/(?:[a-z]{2}(?:-[a-z]{2})?/)?(track|album|playlist)/(\d+)`,
 	)
-	deezerHTTP  = &http.Client{Timeout: 15 * time.Second}
+	deezerHTTP = &http.Client{Timeout: 15 * time.Second}
 )
 
 type deezerTrack struct {
