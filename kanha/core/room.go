@@ -18,6 +18,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -75,6 +76,18 @@ type RoomState struct {
 
 	Assistant *Assistant  // assistant client bound to this room
 	destroyed atomic.Bool // whether room cleanup has completed
+
+	// Playback generation and transition coordinator
+	generation                 atomic.Uint64
+	activeTrackGen             atomic.Uint64
+	manualTransitionInProgress atomic.Bool
+	manualTransitionGen        atomic.Uint64
+	streamStartTime            time.Time
+
+	// Autoplay cancellation coordinator
+	autoplayCancel    context.CancelFunc
+	autoplayGen       uint64
+	autoplayCandidate *state.Track
 }
 
 // Room management
@@ -94,6 +107,7 @@ func DropRoom(chatID int64) bool {
 	roomsMu.Unlock()
 
 	room.cleanupFile()
+	room.CancelPendingAutoplay()
 	room.Stop()
 	room.destroyed.Store(true)
 	return true
@@ -130,6 +144,7 @@ func createNewRoom(chatID int64, ass *Assistant) (*RoomState, bool) {
 			engineToken:   fmt.Sprintf("ap-%d-%d", chatID, time.Now().UnixNano()),
 			Assistant:     ass,
 		}
+		room.generation.Store(1)
 		rooms[chatID] = room
 	}
 
@@ -413,6 +428,222 @@ func (r *RoomState) SetStatusMsg(m *td.Message) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.statusMsg = m
+}
+
+// Playback generation & transition coordinator
+
+func (r *RoomState) Generation() uint64 {
+	if r == nil {
+		return 0
+	}
+	return r.generation.Load()
+}
+
+func (r *RoomState) BumpGeneration() uint64 {
+	if r == nil {
+		return 0
+	}
+	return r.generation.Add(1)
+}
+
+func (r *RoomState) ActiveTrackGen() uint64 {
+	if r == nil {
+		return 0
+	}
+	return r.activeTrackGen.Load()
+}
+
+func (r *RoomState) SetActiveTrackGen(gen uint64) {
+	if r != nil {
+		r.activeTrackGen.Store(gen)
+	}
+}
+
+func (r *RoomState) StreamStartTime() time.Time {
+	if r == nil {
+		return time.Time{}
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.streamStartTime
+}
+
+func (r *RoomState) SetStreamStartTime(t time.Time) {
+	if r != nil {
+		r.mu.Lock()
+		r.streamStartTime = t
+		r.mu.Unlock()
+	}
+}
+
+// CancelPendingAutoplay cancels any in-flight autoplay worker and clears pending candidate.
+func (r *RoomState) CancelPendingAutoplay() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.autoplayCancel != nil {
+		r.autoplayCancel()
+		r.autoplayCancel = nil
+		r.autoplayCandidate = nil
+		return true
+	}
+	return false
+}
+
+// HasPendingAutoplay reports if an autoplay candidate download/preparation is in progress.
+func (r *RoomState) HasPendingAutoplay() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.autoplayCancel != nil
+}
+
+// BeginAutoplay attempts to register an autoplay worker with the given generation.
+// Returns a cancellable context, a cancel func, and whether the worker is valid to proceed.
+func (r *RoomState) BeginAutoplay(gen uint64) (context.Context, context.CancelFunc, bool) {
+	if r == nil || r.destroyed.Load() || r.manualTransitionInProgress.Load() {
+		return nil, nil, false
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.generation.Load() != gen || len(r.queue) > 0 {
+		return nil, nil, false
+	}
+
+	if r.autoplayCancel != nil {
+		r.autoplayCancel()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r.autoplayCancel = cancel
+	r.autoplayGen = gen
+	return ctx, cancel, true
+}
+
+// FinishAutoplay cleans up autoplay worker registration if generation matches.
+func (r *RoomState) FinishAutoplay(gen uint64) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.autoplayGen == gen {
+		if r.autoplayCancel != nil {
+			r.autoplayCancel = nil
+		}
+		r.autoplayCandidate = nil
+	}
+}
+
+// IsAutoplayValid verifies that an autoplay worker running with generation `gen` is still valid.
+// Returns false if a manual command arrived, generation advanced, queue has tracks, or room is destroyed.
+func (r *RoomState) IsAutoplayValid(gen uint64) bool {
+	if r == nil || r.destroyed.Load() {
+		return false
+	}
+	if r.manualTransitionInProgress.Load() {
+		return false
+	}
+	if r.generation.Load() != gen {
+		return false
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if r.autoplayGen != gen {
+		return false
+	}
+	if len(r.queue) > 0 {
+		return false
+	}
+	return true
+}
+
+// StartManualTransition starts a manual playback command (/play, /playforce, /skip)
+// by incrementing the room generation, cancelling pending autoplay, and setting the transition lock.
+func (r *RoomState) StartManualTransition(reason string) uint64 {
+	if r == nil {
+		return 0
+	}
+	gen := r.generation.Add(1)
+	r.manualTransitionInProgress.Store(true)
+	r.manualTransitionGen.Store(gen)
+
+	r.mu.Lock()
+	if r.autoplayCancel != nil {
+		logger.Infof("[Transition] Cancelling pending autoplay due to %s (gen %d)", reason, gen)
+		r.autoplayCancel()
+		r.autoplayCancel = nil
+		r.autoplayCandidate = nil
+	}
+	r.mu.Unlock()
+
+	logger.Infof("[Transition] Started %s for room %d (gen %d)", reason, r.ID, gen)
+	return gen
+}
+
+// FinishManualTransition marks completion of a manual playback command.
+func (r *RoomState) FinishManualTransition(gen uint64) {
+	if r == nil {
+		return
+	}
+	if r.manualTransitionGen.Load() == gen {
+		r.manualTransitionInProgress.Store(false)
+		logger.Infof("[Transition] Finished manual transition for room %d (gen %d)", r.ID, gen)
+	}
+}
+
+// IsManualTransitionInProgress reports if a manual play/skip operation is active.
+func (r *RoomState) IsManualTransitionInProgress() bool {
+	if r == nil {
+		return false
+	}
+	return r.manualTransitionInProgress.Load()
+}
+
+// IsGenuinelyPlaying reports whether media is actively playing (not idle or pending autoplay).
+func (r *RoomState) IsGenuinelyPlaying() bool {
+	if r == nil || r.destroyed.Load() {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.playing && r.track != nil && r.filePath != ""
+}
+
+// IsNaturalStreamEnd checks whether a streamEnd callback represents genuine track completion
+// rather than a decoder crash, initialization failure, or stale generation.
+func (r *RoomState) IsNaturalStreamEnd(gen uint64) (bool, string) {
+	if r == nil || r.destroyed.Load() {
+		return false, "room destroyed"
+	}
+	if r.manualTransitionInProgress.Load() {
+		return false, "manual transition in progress"
+	}
+	if activeGen := r.activeTrackGen.Load(); activeGen != 0 && activeGen != gen {
+		return false, fmt.Sprintf("stale generation (expected %d, got %d)", activeGen, gen)
+	}
+
+	r.mu.RLock()
+	startTime := r.streamStartTime
+	curTrack := r.track
+	r.mu.RUnlock()
+
+	if curTrack != nil && curTrack.Duration > 10 && !startTime.IsZero() {
+		elapsed := time.Since(startTime)
+		if elapsed < 3*time.Second {
+			return false, fmt.Sprintf("premature stream end (%v elapsed for %ds track, possible decoder crash)", elapsed, curTrack.Duration)
+		}
+	}
+
+	return true, "ok"
 }
 
 // State checks

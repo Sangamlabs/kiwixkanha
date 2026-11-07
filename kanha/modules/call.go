@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -153,6 +154,17 @@ func streamEndHandler(
 	if !ok || r.Destroyed() {
 		return
 	}
+
+	if r.IsManualTransitionInProgress() {
+		logger.Infof("[Autoplay] Manual transition in progress for chat %d, ignoring stream-end callback", chatID)
+		return
+	}
+
+	if natural, reason := r.IsNaturalStreamEnd(r.ActiveTrackGen()); !natural {
+		logger.Warnf("[Autoplay] Stream-end ignored for chat %d: %s", chatID, reason)
+		return
+	}
+
 	scheduleOldPlayingMessage(r)
 
 	c := core.Bot
@@ -182,6 +194,27 @@ func streamEndHandler(
 		wasLooping = true
 	}
 
+	var workerGen uint64
+	var apCtx context.Context
+	var apCancel context.CancelFunc
+
+	if isAutoplay {
+		workerGen = r.Generation()
+		var ok bool
+		apCtx, apCancel, ok = r.BeginAutoplay(workerGen)
+		if !ok {
+			logger.Infof("[Autoplay] Autoplay aborted before starting for chat %d (stale or manual transition active)", chatID)
+			return
+		}
+		defer r.FinishAutoplay(workerGen)
+		defer apCancel()
+
+		if !r.IsAutoplayValid(workerGen) || apCtx.Err() != nil {
+			logger.Infof("[Autoplay] Autoplay cancelled before status message for chat %d", chatID)
+			return
+		}
+	}
+
 	logger.Infof("[Autoplay] Queue candidate selected: %s", t.Title)
 
 	statusText := F(cid, "stream_downloading_next")
@@ -204,14 +237,46 @@ func streamEndHandler(
 		filePath = r.FilePath()
 	} else {
 		// Parallel thumbnail preparation for the candidate
-		StartNowPlayingPreparation(context.Background(), c, chatID, t, nil)
+		thumbCtx := context.Background()
+		if isAutoplay {
+			thumbCtx = apCtx
+		}
+		StartNowPlayingPreparation(thumbCtx, c, chatID, t, nil)
 
 		const maxRetries = 4
 		const downloadTimeout = 60 * time.Second
 		for attempt := 0; attempt < maxRetries; attempt++ {
-			dlCtx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
+			if isAutoplay && (!r.IsAutoplayValid(workerGen) || apCtx.Err() != nil) {
+				logger.Warnf("[Autoplay] Worker stale/cancelled before download attempt %d for chat %d", attempt, chatID)
+				if statusMsg != nil {
+					_ = statusMsg.Delete(c, true)
+				}
+				return
+			}
+
+			var dlCtx context.Context
+			var cancel context.CancelFunc
+			if isAutoplay {
+				dlCtx, cancel = context.WithTimeout(apCtx, downloadTimeout)
+			} else {
+				dlCtx, cancel = context.WithTimeout(context.Background(), downloadTimeout)
+			}
+
 			filePath, dlErr = platforms.Download(dlCtx, t, statusMsg)
 			cancel()
+
+			// Check after download blocking call
+			if isAutoplay && (!r.IsAutoplayValid(workerGen) || apCtx.Err() != nil) {
+				logger.Warnf("[Autoplay] Worker stale/cancelled after download attempt %d for chat %d", attempt, chatID)
+				if filePath != "" {
+					_ = os.Remove(filePath)
+				}
+				if statusMsg != nil {
+					_ = statusMsg.Delete(c, true)
+				}
+				return
+			}
+
 			if dlErr == nil {
 				break
 			}
@@ -221,6 +286,13 @@ func streamEndHandler(
 			apMarkPlayed(chatID, t.ID)
 
 			if isAutoplay {
+				if !r.IsAutoplayValid(workerGen) || apCtx.Err() != nil {
+					logger.Warnf("[Autoplay] Worker stale/cancelled during candidate switch for chat %d", chatID)
+					if statusMsg != nil {
+						_ = statusMsg.Delete(c, true)
+					}
+					return
+				}
 				nextT := pickAutoplayCandidate(chatID, t)
 				if nextT == nil {
 					break
@@ -228,7 +300,7 @@ func streamEndHandler(
 				nextT.Requester = "🎵 ᴀᴜᴛᴏᴘʟᴀʏ"
 				t = nextT
 				logger.Infof("[Autoplay] Queue candidate selected: %s", t.Title)
-				StartNowPlayingPreparation(context.Background(), c, chatID, t, nil)
+				StartNowPlayingPreparation(apCtx, c, chatID, t, nil)
 			} else {
 				// If manual queued track failed on all providers, try next queued track if available
 				if nextQueued := r.NextTrack(); nextQueued != nil {
@@ -241,6 +313,17 @@ func streamEndHandler(
 				}
 			}
 		}
+	}
+
+	if isAutoplay && (!r.IsAutoplayValid(workerGen) || apCtx.Err() != nil) {
+		logger.Warnf("[Autoplay] Worker stale or cancelled before Play for chat %d, aborting", chatID)
+		if filePath != "" {
+			_ = os.Remove(filePath)
+		}
+		if statusMsg != nil {
+			_ = statusMsg.Delete(c, true)
+		}
+		return
 	}
 
 	if dlErr != nil {
@@ -257,8 +340,21 @@ func streamEndHandler(
 		return
 	}
 
-	logger.Infof("[Autoplay] Starting playback")
-	if err := r.Play(t, filePath, true); err != nil {
+	// Check generation immediately before r.Play()
+	if isAutoplay && !r.IsAutoplayValid(workerGen) {
+		logger.Warnf("[Autoplay] Worker stale immediately before Play for chat %d (workerGen=%d, curGen=%d), aborting", chatID, workerGen, r.Generation())
+		if filePath != "" {
+			_ = os.Remove(filePath)
+		}
+		if statusMsg != nil {
+			_ = statusMsg.Delete(c, true)
+		}
+		return
+	}
+
+	logger.Infof("[Autoplay] Starting playback for %s", t.Title)
+	forcePlay := !isAutoplay
+	if err := r.Play(t, filePath, forcePlay); err != nil {
 		logger.Errorf(
 			"[onStreamEndHandler] Play failed for %s: %v",
 			t.URL,
@@ -268,6 +364,10 @@ func streamEndHandler(
 		core.DropRoom(chatID)
 
 		return
+	}
+
+	if isAutoplay {
+		r.SetActiveTrackGen(workerGen)
 	}
 
 	statusMsg = sendNowPlaying(c, statusMsg, cid, r, t)

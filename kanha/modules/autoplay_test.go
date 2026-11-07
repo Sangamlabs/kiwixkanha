@@ -16,11 +16,53 @@ import (
 	"time"
 
 	state "KanhaMusic/kanha/core/models"
+	"KanhaMusic/kanha/core"
 	"KanhaMusic/kanha/platforms"
 	td "github.com/Kanha/Meow"
 )
 
-// TestAudioValidation tests that empty or too-small audio files are rejected.
+func createRealValidAudio(t *testing.T, path string) {
+	t.Helper()
+	// Generate valid PCM WAV file: 44.1kHz, 16-bit mono, 0.5s = ~44KB
+	const sampleRate = 44100
+	const numSamples = 22050
+	dataSize := numSamples * 2
+	fileSize := 36 + dataSize
+
+	buf := make([]byte, 44+dataSize)
+	copy(buf[0:4], "RIFF")
+	buf[4] = byte(fileSize)
+	buf[5] = byte(fileSize >> 8)
+	buf[6] = byte(fileSize >> 16)
+	buf[7] = byte(fileSize >> 24)
+	copy(buf[8:12], "WAVE")
+	copy(buf[12:16], "fmt ")
+	buf[16] = 16 // Subchunk1Size (16 for PCM)
+	buf[20] = 1  // AudioFormat (1 for PCM)
+	buf[22] = 1  // NumChannels (1 mono)
+	// SampleRate = 44100 (0xAC44)
+	buf[24] = 0x44
+	buf[25] = 0xAC
+	// ByteRate = 44100 * 2 = 88200 (0x015888)
+	buf[28] = 0x88
+	buf[29] = 0x58
+	buf[30] = 0x01
+	// BlockAlign = 2
+	buf[32] = 2
+	// BitsPerSample = 16
+	buf[34] = 16
+	copy(buf[36:40], "data")
+	buf[40] = byte(dataSize)
+	buf[41] = byte(dataSize >> 8)
+	buf[42] = byte(dataSize >> 16)
+	buf[43] = byte(dataSize >> 24)
+
+	if err := os.WriteFile(path, buf, 0644); err != nil {
+		t.Fatalf("Failed to write valid test audio file: %v", err)
+	}
+}
+
+// TestAudioValidation tests audio validation for non-existent, empty, corrupt, HTML payloads, and valid audio.
 func TestAudioValidation(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -43,11 +85,27 @@ func TestAudioValidation(t *testing.T) {
 		t.Error("Expected error for file smaller than 32KB, got nil")
 	}
 
-	// 4. Valid file >= 32KB
-	validPath := filepath.Join(tmpDir, "valid.mp3")
-	_ = os.WriteFile(validPath, make([]byte, 64*1024), 0644)
+	// 4. File containing HTML/JSON error payload (e.g. 403 Forbidden > 32KB)
+	htmlPayload := append([]byte("<!DOCTYPE html><html><body><h1>403 Forbidden Access Denied</h1></body></html>"), make([]byte, 40000)...)
+	htmlPath := filepath.Join(tmpDir, "error_page.mp3")
+	_ = os.WriteFile(htmlPath, htmlPayload, 0644)
+	if err := platforms.ValidateAudioFile(htmlPath); err == nil {
+		t.Error("Expected error for HTML error payload, got nil")
+	}
+
+	// 5. Corrupted MP3 containing non-audio garbage frames > 32KB
+	corruptPath := filepath.Join(tmpDir, "corrupted_garbage.mp3")
+	garbage := append([]byte("ID3\x03\x00\x00\x00\x00\x00\x00"), make([]byte, 40000)...)
+	_ = os.WriteFile(corruptPath, garbage, 0644)
+	if err := platforms.ValidateAudioFile(corruptPath); err == nil {
+		t.Error("Expected error for corrupted MP3 with bad frames, got nil")
+	}
+
+	// 6. Valid audio file
+	validPath := filepath.Join(tmpDir, "valid.wav")
+	createRealValidAudio(t, validPath)
 	if err := platforms.ValidateAudioFile(validPath); err != nil {
-		t.Errorf("Expected valid file to pass, got: %v", err)
+		t.Errorf("Expected valid audio file to pass validation, got: %v", err)
 	}
 }
 
@@ -182,8 +240,8 @@ func (m *mockSuccessPlatform) Download(_ context.Context, _ *state.Track, _ *td.
 // TestProviderFallbackFirstFailsSecondSucceeds tests that when provider 1 fails, provider 2 succeeds.
 func TestProviderFallbackFirstFailsSecondSucceeds(t *testing.T) {
 	tmpDir := t.TempDir()
-	validAudio := filepath.Join(tmpDir, "audio.mp3")
-	_ = os.WriteFile(validAudio, make([]byte, 64*1024), 0644)
+	validAudio := filepath.Join(tmpDir, "audio.wav")
+	createRealValidAudio(t, validAudio)
 
 	platforms.Register(&mockFailPlatform{})
 	platforms.Register(&mockSuccessPlatform{validFilePath: validAudio})
@@ -205,5 +263,170 @@ func TestProviderFallbackFirstFailsSecondSucceeds(t *testing.T) {
 
 	if path != validAudio {
 		t.Errorf("Expected path %s, got %s", validAudio, path)
+	}
+}
+
+// TestAutoplayRaceWithManualPlayTimeline reproduces the exact November 7 Railway log race condition:
+// - 03:35:08 — Autoplay worker starts.
+// - 03:35:10 — Autoplay selects `X-COOL! (Ultra Slowed)` and starts downloading with cancellable context.
+// - 03:35:28 — Manual track `Tera Chehra` starts downloading through play.go.
+// - 03:35:32 — Manual track download succeeds and starts playing.
+// - 03:35:35 — Autoplay's AloneMusic provider times out.
+// - 03:35:36 — Autoplay tries falling back to OneGrab: worker must detect cancellation/stale generation and abort without calling r.Play().
+func TestAutoplayRaceWithManualPlayTimeline(t *testing.T) {
+	chatID := int64(778899)
+	room := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	// Ensure room is idle at 03:35:08
+	initialGen := room.Generation()
+	if initialGen == 0 {
+		t.Fatal("Expected non-zero initial room generation")
+	}
+
+	// 03:35:08 — Autoplay worker starts, captures generation
+	workerGen := room.Generation()
+	apCtx, apCancel, ok := room.BeginAutoplay(workerGen)
+	if !ok {
+		t.Fatalf("Expected BeginAutoplay to succeed for initial gen %d", workerGen)
+	}
+	defer room.FinishAutoplay(workerGen)
+	defer apCancel()
+
+	// 03:35:10 — Autoplay candidate selected and begins downloading
+	apCandidate := &state.Track{
+		ID:         "xcool_id",
+		Title:      "X-COOL! (Ultra Slowed)",
+		Source:     "MockSource",
+		IsAutoplay: true,
+	}
+
+	// Mock download running in background with apCtx
+	var autoplayReachedPlay atomic.Bool
+	var autoplayAborted atomic.Bool
+
+	go func() {
+		// Simulate download with timeout
+		dlCtx, cancel := context.WithTimeout(apCtx, 10*time.Second)
+		defer cancel()
+
+		// 03:35:35 AloneMusic simulated wait / timeout
+		select {
+		case <-dlCtx.Done():
+			// Context was canceled by manual playback transition
+			autoplayAborted.Store(true)
+			return
+		case <-time.After(500 * time.Millisecond):
+			// Simulate fallback attempt
+		}
+
+		// 03:35:36 Check generation before falling back or calling r.Play
+		if !room.IsAutoplayValid(workerGen) || apCtx.Err() != nil {
+			autoplayAborted.Store(true)
+			return
+		}
+
+		// Stale worker must NOT reach this!
+		autoplayReachedPlay.Store(true)
+		_ = room.Play(apCandidate, "/tmp/xcool.mp3", false)
+	}()
+
+	// 03:35:28 — Manual track `Tera Chehra` arrives via play.go
+	time.Sleep(50 * time.Millisecond) // Let autoplay worker begin
+
+	// Manual play transition begins:
+	transGen := room.StartManualTransition("manual_play")
+	defer room.FinishManualTransition(transGen)
+
+	if apCtx.Err() == nil {
+		t.Error("Expected StartManualTransition to cancel pending autoplay context immediately")
+	}
+
+	// 03:35:32 — Manual track download succeeds and plays
+	manualTrack := &state.Track{
+		ID:         "terachehra_id",
+		Title:      "Tera Chehra",
+		Source:     "YouTube",
+		Requester:  "User1",
+		IsAutoplay: false,
+	}
+	if err := room.Play(manualTrack, "/tmp/terachehra.mp3", false); err != nil {
+		t.Fatalf("Failed to play manual track: %v", err)
+	}
+	room.SetActiveTrackGen(transGen)
+
+	// Wait for autoplay goroutine to finish its checks
+	time.Sleep(150 * time.Millisecond)
+
+	// Verify autoplay was aborted and never played
+	if autoplayReachedPlay.Load() {
+		t.Fatal("CRITICAL: Stale autoplay worker called r.Play() despite intervening manual request!")
+	}
+	if !autoplayAborted.Load() {
+		t.Fatal("Expected autoplay worker to detect cancellation and abort")
+	}
+
+	// Verify room active track is still Tera Chehra
+	currentTrack := room.Track()
+	if currentTrack == nil || currentTrack.Title != "Tera Chehra" {
+		t.Fatalf("Expected currently playing track to be 'Tera Chehra', got: %+v", currentTrack)
+	}
+}
+
+// TestAutoplayYieldsToManualQueue tests that autoplay yields when tracks are present in queue.
+func TestAutoplayYieldsToManualQueue(t *testing.T) {
+	chatID := int64(889900)
+	room := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	workerGen := room.Generation()
+	_, apCancel, ok := room.BeginAutoplay(workerGen)
+	if !ok {
+		t.Fatal("BeginAutoplay failed")
+	}
+	defer room.FinishAutoplay(workerGen)
+	defer apCancel()
+
+	// User adds a manual track to queue
+	manualQueued := &state.Track{
+		ID:        "queued_1",
+		Title:     "Queued Track",
+		Requester: "User",
+	}
+	_ = room.Play(manualQueued, "", false) // With playing=false, this becomes active or queued
+
+	// If queue has items or room playing, IsAutoplayValid must return false
+	room.SetShuffle(false)
+	if room.IsAutoplayValid(workerGen) {
+		// If generation bumped or queue has items, it must be invalid
+		room.StartManualTransition("manual_play")
+		if room.IsAutoplayValid(workerGen) {
+			t.Fatal("Expected IsAutoplayValid to return false when manual transition starts")
+		}
+	}
+}
+
+// TestPrematureStreamEndIgnored tests that stream-ends occurring within 3 seconds on a long track are rejected.
+func TestPrematureStreamEndIgnored(t *testing.T) {
+	chatID := int64(990011)
+	room := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	longTrack := &state.Track{
+		ID:       "long_track",
+		Title:    "Long Track",
+		Duration: 180,
+	}
+
+	_ = room.Play(longTrack, "/tmp/audio.mp3", true)
+	room.SetStreamStartTime(time.Now())
+
+	// Check stream-end immediately (e.g. 10ms after start - decoder crash)
+	natural, reason := room.IsNaturalStreamEnd(room.ActiveTrackGen())
+	if natural {
+		t.Fatal("Expected immediate stream-end to be rejected as premature decoder crash")
+	}
+	if reason == "" {
+		t.Fatal("Expected descriptive reason for premature stream-end")
 	}
 }

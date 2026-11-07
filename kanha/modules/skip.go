@@ -106,6 +106,9 @@ func handleSkip(c *td.Client, m *td.Message, cplay bool) error {
 		return err
 	}
 
+	transGen := r.StartManualTransition("skip")
+	defer r.FinishManualTransition(transGen)
+
 	mention := mentionOf(nil, m.SenderID())
 	skipCount := 1
 
@@ -220,6 +223,8 @@ func handleSkip(c *td.Client, m *td.Message, cplay bool) error {
 		return nil
 	}
 
+	r.SetActiveTrackGen(transGen)
+
 	statusMsg = sendNowPlaying(c, statusMsg, chatID, r, t)
 	if statusMsg != nil {
 		r.SetStatusMsg(statusMsg)
@@ -240,6 +245,9 @@ func handleAutoplaySkip(c *td.Client, m *td.Message, cplay bool) error {
 		_, err := m.ReplyText(c, F(chatID, "room_no_active"), nil)
 		return err
 	}
+
+	transGen := r.StartManualTransition("skip")
+	defer r.FinishManualTransition(transGen)
 
 	if !r.Autoplay() {
 		_, err := m.ReplyText(c, F(chatID, "askip_disabled"), nil)
@@ -326,6 +334,8 @@ func handleAutoplaySkip(c *td.Client, m *td.Message, cplay bool) error {
 		core.DropRoom(r.ID)
 		return nil
 	}
+
+	r.SetActiveTrackGen(transGen)
 
 	statusMsg = sendNowPlaying(c, statusMsg, chatID, r, next)
 	if statusMsg != nil {

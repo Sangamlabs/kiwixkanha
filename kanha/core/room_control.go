@@ -78,6 +78,7 @@ func (r *RoomState) Play(t *state.Track, path string, force ...bool) error {
 	r.paused = false
 	r.muted = false
 	r.updatedAt = time.Now().Unix()
+	r.streamStartTime = time.Now()
 	r.mu.Unlock()
 
 	err := r.play()
@@ -90,6 +91,7 @@ func (r *RoomState) Play(t *state.Track, path string, force ...bool) error {
 		return err
 	}
 
+	r.activeTrackGen.Store(r.generation.Load())
 	return nil
 }
 
@@ -107,9 +109,13 @@ func (r *RoomState) Pause() (bool, error) {
 		return true, nil
 	}
 
-	paused, err := r.Assistant.Ntg.Pause(r.ID)
-	if err != nil {
-		return false, err
+	var paused bool
+	if r.Assistant != nil && r.Assistant.Ntg != nil {
+		p, err := r.Assistant.Ntg.Pause(r.ID)
+		if err != nil {
+			return false, err
+		}
+		paused = p
 	}
 
 	r.mu.RLock()
@@ -147,9 +153,13 @@ func (r *RoomState) Resume() (bool, error) {
 		return true, nil
 	}
 
-	resumed, err := r.Assistant.Ntg.Resume(r.ID)
-	if err != nil {
-		return false, err
+	var resumed bool
+	if r.Assistant != nil && r.Assistant.Ntg != nil {
+		res, err := r.Assistant.Ntg.Resume(r.ID)
+		if err != nil {
+			return false, err
+		}
+		resumed = res
 	}
 
 	r.mu.Lock()
@@ -209,7 +219,10 @@ func (r *RoomState) Stop() error {
 	_, file, line, _ := runtime.Caller(1)
 	logger.Debugf("Stop Called from %s:%d", file, line)
 
-	err := r.Assistant.Ntg.Stop(r.ID)
+	var err error
+	if r.Assistant != nil && r.Assistant.Ntg != nil {
+		err = r.Assistant.Ntg.Stop(r.ID)
+	}
 
 	r.mu.Lock()
 	r.track = nil
@@ -361,9 +374,13 @@ func (r *RoomState) Mute() (bool, error) {
 		return true, nil
 	}
 
-	muted, err := r.Assistant.Ntg.Mute(r.ID)
-	if err != nil {
-		return false, err
+	var muted bool
+	if r.Assistant != nil && r.Assistant.Ntg != nil {
+		m, err := r.Assistant.Ntg.Mute(r.ID)
+		if err != nil {
+			return false, err
+		}
+		muted = m
 	}
 
 	r.mu.RLock()
@@ -389,9 +406,13 @@ func (r *RoomState) Unmute() (bool, error) {
 		return false, ErrRoomDestroyed
 	}
 
-	unmuted, err := r.Assistant.Ntg.Unmute(r.ID)
-	if err != nil {
-		return false, err
+	var unmuted bool
+	if r.Assistant != nil && r.Assistant.Ntg != nil {
+		u, err := r.Assistant.Ntg.Unmute(r.ID)
+		if err != nil {
+			return false, err
+		}
+		unmuted = u
 	}
 
 	r.mu.Lock()
@@ -404,6 +425,9 @@ func (r *RoomState) Unmute() (bool, error) {
 }
 
 func (r *RoomState) play() error {
+	if r.Assistant == nil || r.Assistant.Ntg == nil {
+		return nil
+	}
 	desc := getMediaDescription(r.filePath, r.position, r.speed, r.track.Video)
 	return r.Assistant.Ntg.Play(r.ID, desc)
 }

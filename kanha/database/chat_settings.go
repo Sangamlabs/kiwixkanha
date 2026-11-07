@@ -52,6 +52,12 @@ func getChatSettings(chatID int64) (*ChatSettings, error) {
 		return settings, nil
 	}
 
+	if chatSettingsColl == nil {
+		def := defaultChatSettings(chatID)
+		chatSettingsCache.Set(chatID, def)
+		return def, nil
+	}
+
 	ctx, cancel := ctx()
 	defer cancel()
 
@@ -78,6 +84,11 @@ func getChatSettings(chatID int64) (*ChatSettings, error) {
 }
 
 func updateChatSettings(settings *ChatSettings) error {
+	if chatSettingsColl == nil {
+		chatSettingsCache.Set(settings.ChatID, settings)
+		return nil
+	}
+
 	ctx, cancel := ctx()
 	defer cancel()
 

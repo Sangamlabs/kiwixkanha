@@ -18,10 +18,12 @@
 package platforms
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -115,7 +117,9 @@ func GetTracks(c *td.Client, m *td.Message, video bool) ([]*state.Track, error) 
 
 const minPlayableAudioBytes = 32 * 1024 // 32 KB minimum valid audio/video file
 
-// ValidateAudioFile checks if the downloaded file exists, is non-empty and has reasonable size.
+// ValidateAudioFile checks if the downloaded file exists, is non-empty, has reasonable size,
+// does not contain text/HTML error responses, has a valid audio stream via ffprobe,
+// and decodes successfully via ffmpeg.
 func ValidateAudioFile(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("empty file path")
@@ -130,6 +134,85 @@ func ValidateAudioFile(path string) error {
 	if info.Size() < minPlayableAudioBytes {
 		return fmt.Errorf("media file too small or empty (%d bytes, min required %d)", info.Size(), minPlayableAudioBytes)
 	}
+
+	// Check initial bytes for HTML/JSON error payloads (e.g. 403 Forbidden, Cloudflare, API errors)
+	headerBuf := make([]byte, 1024)
+	f, err := os.Open(path)
+	if err == nil {
+		n, _ := f.Read(headerBuf)
+		_ = f.Close()
+		if n > 0 {
+			lowerHeader := strings.ToLower(string(headerBuf[:n]))
+			errorSignatures := []string{
+				"<html",
+				"<!doctype",
+				"{\"error\"",
+				"{\"message\"",
+				"{\"code\":",
+				"{\"status\":",
+				"\"status\":\"error\"",
+				"access denied",
+				"404 not found",
+				"403 forbidden",
+				"internal server error",
+				"bad gateway",
+				"service unavailable",
+			}
+			for _, sig := range errorSignatures {
+				if strings.Contains(lowerHeader, sig) {
+					return fmt.Errorf("file contains textual/HTML error payload instead of valid audio: %s", sig)
+				}
+			}
+		}
+	}
+
+	// Allow skipping external codec probing via environment variable (e.g. in minimal unit test mocks)
+	if os.Getenv("SKIP_AUDIO_CODEC_PROBE") == "1" {
+		return nil
+	}
+
+	// Real audio-stream probing with ffprobe if installed
+	if ffprobePath, err := exec.LookPath("ffprobe"); err == nil && ffprobePath != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, ffprobePath,
+			"-v", "error",
+			"-select_streams", "a:0",
+			"-show_entries", "stream=codec_name",
+			"-of", "default=noprint_wrappers=1:nokey=1",
+			path,
+		)
+		out, err := cmd.Output()
+		if err != nil || len(strings.TrimSpace(string(out))) == 0 {
+			return fmt.Errorf("ffprobe audio stream validation failed: %v", err)
+		}
+	}
+
+	// Real audio decode test with ffmpeg if installed (catches corrupt frames and bad headers)
+	if ffmpegPath, err := exec.LookPath("ffmpeg"); err == nil && ffmpegPath != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, ffmpegPath,
+			"-v", "error",
+			"-xerror",
+			"-i", path,
+			"-t", "1",
+			"-f", "null",
+			"-",
+		)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			errMsg := strings.TrimSpace(stderr.String())
+			if errMsg != "" {
+				return fmt.Errorf("audio decoding test failed: %s (%w)", errMsg, err)
+			}
+			return fmt.Errorf("audio decoding test failed: %w", err)
+		}
+	}
+
 	return nil
 }
 

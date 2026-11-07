@@ -323,7 +323,7 @@ func fetchTracksAndCheckStatus(
 		return nil, false, err
 	}
 
-	return tracks, r.Active(), nil
+	return tracks, r.IsGenuinelyPlaying(), nil
 }
 
 func rejectDuplicate(
@@ -498,6 +498,19 @@ func playTracksAndRespond(
 ) error {
 	chatID := m.ChatID()
 
+	var transGen uint64
+	if !isActive || force {
+		reason := "manual_play"
+		if force {
+			reason = "playforce"
+		}
+		transGen = r.StartManualTransition(reason)
+		defer r.FinishManualTransition(transGen)
+	} else {
+		// Normal queue: cancel any pending autoplay so manual queue has strict priority
+		r.CancelPendingAutoplay()
+	}
+
 	for i, track := range tracks {
 		track.Requester = mention
 		track.RequesterID = m.SenderID()
@@ -513,13 +526,19 @@ func playTracksAndRespond(
 
 			path, err := downloadFirstTrack(c, replyMsg, chatID, mention, track)
 			if err != nil {
+				logger.Warnf("[%s] Failed to download requested track %q: %v", getCommand(m), track.Title, err)
 				return nil
 			}
 			filePath = path
 		}
 
 		if err := playTrackWithRetry(r, track, filePath, force && i == 0, c, replyMsg); err != nil {
+			logger.Errorf("[%s] Failed to play track %q with retry: %v", getCommand(m), track.Title, err)
 			return err
+		}
+
+		if i == 0 && (!isActive || force) && transGen != 0 {
+			r.SetActiveTrackGen(transGen)
 		}
 
 		sendPlayLogs(c, m, track, (isActive && !force) || i > 0)
