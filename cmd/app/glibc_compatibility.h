@@ -1,6 +1,6 @@
 // Created by Laky64 on 23/04/2025.
 // This header file provides compatibility for glibc >= 2.28
-// for _dn_expand and __res_nquery functions.
+// for __dn_expand, __res_nquery, __res_nclose, and __res_ninit functions.
 
 #pragma once
 
@@ -10,7 +10,7 @@
 
 #include <resolv.h>
 
-int __dn_expand(
+__attribute__((weak)) int __dn_expand(
     const unsigned char *src,
     const unsigned char *src_end,
     unsigned char *dst,
@@ -24,7 +24,7 @@ int __dn_expand(
     return n;
 }
 
-int __res_nquery(
+__attribute__((weak)) int __res_nquery(
     const res_state statp,
     const char *dname,
     int class,
@@ -33,6 +33,14 @@ int __res_nquery(
     int anslen
 ) {
     return res_nquery(statp, dname, class, type, answer, anslen);
+}
+
+__attribute__((weak)) void __res_nclose(res_state statp) {
+    res_nclose(statp);
+}
+
+__attribute__((weak)) int __res_ninit(res_state statp) {
+    return res_ninit(statp);
 }
 
 #endif

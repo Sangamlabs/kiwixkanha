@@ -27,6 +27,12 @@
   - `kanha/core/models`: 6/6 PASSED (0.02s)
   - `kanha/modules`: 26/26 PASSED (10.08s)
 - [x] Verified production Linux CGO build passes with code 0 (`CGO_ENABLED=1 go build -v -trimpath -ldflags="-w -s" -o app ./cmd/app/`), generating 80MB stripped ELF binary.
+- [x] Resolved Railway build failure & duplicate symbol issue:
+  - Removed `ntgcalls/resolver_compat.c` (commit `a0705e9`).
+  - Hardened `cmd/app/glibc_compatibility.h` with `__attribute__((weak))` on all resolver functions (`__dn_expand`, `__res_nquery`, `__res_nclose`, `__res_ninit`).
+  - Added `-lresolv` to `#cgo linux LDFLAGS` in `cmd/app/main.go`.
+  - Replaced `RUN go mod tidy` with `RUN go mod download` in `Dockerfile`.
+  - Verified clean GOCACHE build with exit code 0.
 - [x] Maintained persistent context documents (`KIWI_PROJECT_CONTEXT.md`, `KIWI_NEXT_STEPS.md`).
 
 ## 2. Incomplete Tasks / Remaining Items
