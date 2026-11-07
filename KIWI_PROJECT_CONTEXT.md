@@ -126,3 +126,13 @@ Existing providers (OneGrab, AloneMusic, MeowAPI, Spotify, YouTube) remain untou
    - **Provider Payload Sanitization:**
      - `OneGrab` and `AloneMusic` download pipelines verify `Content-Type` headers (rejecting `text/html`, `text/plain`, `application/json`).
      - File inspection checks initial 512 bytes for HTML doctype, tags, or JSON error messages, failing early before corrupt audio reaches ffmpeg/ntgcalls.
+
+10. **Build Stabilization & Symbol Collision Fix:**
+    - **Root Cause of Railway Exit Code 1:**
+      - In commit `3ef178a`, `ntgcalls/resolver_compat.c` was introduced.
+      - `cmd/app/glibc_compatibility.h` was already included by `cmd/app/main.go` and defined global functions `__dn_expand` and `__res_nquery`.
+      - When building `cmd/app/`, GCC encountered duplicate definitions across `glibc_compatibility.h` (`000001.o`) and `resolver_compat.c` (`000033.o`), failing the final link step with `multiple definition of '__dn_expand'` and `multiple definition of '__res_nquery'`.
+    - **Resolution:**
+      - Removed `ntgcalls/resolver_compat.c`.
+      - `cmd/app/glibc_compatibility.h` handles the required glibc resolver compatibility natively.
+      - Re-ran production Linux CGO build with exit code 0 (`app` binary generated at 80MB stripped ELF).
