@@ -342,6 +342,12 @@ func (p *YouTubePlatform) performSearch(query string, limit int) ([]*state.Track
 	}
 
 	if err := p.callInnerTube("search", payload, &result); err != nil {
+		logger.Warnf("[YouTube] InnerTube search failed (%v); trying yt-dlp search with cookies", err)
+		if ytdlpRaw, ok := GetPlatform(PlatformYtDlp); ok {
+			if ytdlp, ok := ytdlpRaw.(*YtdlpPlatform); ok {
+				return ytdlp.SearchTracks(query, limit, false)
+			}
+		}
 		return nil, err
 	}
 
@@ -351,11 +357,24 @@ func (p *YouTubePlatform) performSearch(query string, limit int) ([]*state.Track
 		"primaryContents", "sectionListRenderer", "contents",
 	).([]any)
 	if !ok {
+		logger.Warn("[YouTube] InnerTube search returned unexpected structure; trying yt-dlp search with cookies")
+		if ytdlpRaw, ok := GetPlatform(PlatformYtDlp); ok {
+			if ytdlp, ok := ytdlpRaw.(*YtdlpPlatform); ok {
+				return ytdlp.SearchTracks(query, limit, false)
+			}
+		}
 		return nil, errors.New("invalid search results structure")
 	}
 
 	var tracks []*state.Track
 	p.parseNodes(contents, &tracks, limit, "videoRenderer")
+	if len(tracks) == 0 {
+		if ytdlpRaw, ok := GetPlatform(PlatformYtDlp); ok {
+			if ytdlp, ok := ytdlpRaw.(*YtdlpPlatform); ok {
+				return ytdlp.SearchTracks(query, limit, false)
+			}
+		}
+	}
 	return tracks, nil
 }
 

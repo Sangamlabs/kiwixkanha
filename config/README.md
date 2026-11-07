@@ -54,6 +54,7 @@ These must be set for the bot to start.
 | `SET_CMDS` | `false` | Automatically set bot commands in Telegram UI on startup. |
 | `DISABLE_COLOUR` | `false` | If `true`, disables Telegram inline button colour styling (`Primary/Success/Danger`). |
 | `COOKIES_LINK` | `""` | URL to a `yt-dlp` cookies file (e.g., via batbin). |
+| `YOUTUBE_COOKIES_FILE` | `config/cookie/cookie.txt` | File path to YouTube cookies in Netscape format for `yt-dlp`. |
 | `LOGGER_ID` | `0` | Chat ID where the bot will send logs and error reports. Also accepts `LOG_GROUP_ID`. If unset, logging-to-chat is disabled. |
 
 ## 🎨 Customization

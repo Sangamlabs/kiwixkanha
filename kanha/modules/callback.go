@@ -296,6 +296,7 @@ func handleSkipAction(c *td.Client, u *td.UpdateNewCallbackQuery, r *core.RoomSt
 		return nil
 	}
 
+	r.UpdateSessionVibeFromTrack(t, true)
 	u.Answer(c, 0, true, F(chatID, "cb_skip_success"), "")
 	cbDelete(c, u)
 

@@ -23,3 +23,13 @@ index.html
 *.txt
 **/x.go
 KanhaMusic/
+
+# YouTube Cookies
+config/cookie/*
+!config/cookie/.gitkeep
+config/cookies/*.txt
+!config/cookies/example.txt
+cookies.txt
+*.cookie
+*.cookies
+

@@ -90,9 +90,12 @@ type RoomState struct {
 	autoplayCandidate *state.Track
 
 	// Session vibe tracking
-	sessionVibeMu sync.RWMutex
-	sessionVibe   *state.TrackVibeProfile
-	vibeHistory   []*state.TrackVibeProfile
+	sessionVibeMu  sync.RWMutex
+	sessionVibe    *state.TrackVibeProfile
+	dominantVibe   *state.TrackVibeProfile
+	historicalVibe *state.TrackVibeProfile
+	lastManualVibe *state.TrackVibeProfile
+	vibeHistory    []*state.TrackVibeProfile
 }
 
 // Room management
@@ -660,56 +663,217 @@ func (r *RoomState) SetVibeProfile(p *state.TrackVibeProfile) {
 	}
 	r.sessionVibeMu.Lock()
 	defer r.sessionVibeMu.Unlock()
+	r.dominantVibe = p
 	r.sessionVibe = p
 }
 
-// GetVibeProfile returns the current session vibe profile, or nil if none.
+// GetVibeProfile returns the current active dominant session vibe profile, or nil if none.
 func (r *RoomState) GetVibeProfile() *state.TrackVibeProfile {
 	if r == nil {
 		return nil
 	}
 	r.sessionVibeMu.RLock()
 	defer r.sessionVibeMu.RUnlock()
-	if r.sessionVibe == nil {
+	if r.dominantVibe != nil {
+		cpy := *r.dominantVibe
+		return &cpy
+	}
+	if r.sessionVibe != nil {
+		cpy := *r.sessionVibe
+		return &cpy
+	}
+	return nil
+}
+
+// GetDominantVibeProfile returns the current active dominant profile.
+func (r *RoomState) GetDominantVibeProfile() *state.TrackVibeProfile {
+	return r.GetVibeProfile()
+}
+
+// GetHistoricalVibeProfile returns the archived historical profile from before the last style switch.
+func (r *RoomState) GetHistoricalVibeProfile() *state.TrackVibeProfile {
+	if r == nil {
 		return nil
 	}
-	cpy := *r.sessionVibe
+	r.sessionVibeMu.RLock()
+	defer r.sessionVibeMu.RUnlock()
+	if r.historicalVibe == nil {
+		return nil
+	}
+	cpy := *r.historicalVibe
 	return &cpy
 }
 
+// GetLastManualVibeProfile returns the last manual track's vibe profile.
+func (r *RoomState) GetLastManualVibeProfile() *state.TrackVibeProfile {
+	if r == nil {
+		return nil
+	}
+	r.sessionVibeMu.RLock()
+	defer r.sessionVibeMu.RUnlock()
+	if r.lastManualVibe == nil {
+		return nil
+	}
+	cpy := *r.lastManualVibe
+	return &cpy
+}
+
+// GetVibeHistory returns a copy of the active session's recent vibe history.
+func (r *RoomState) GetVibeHistory() []*state.TrackVibeProfile {
+	if r == nil {
+		return nil
+	}
+	r.sessionVibeMu.RLock()
+	defer r.sessionVibeMu.RUnlock()
+	res := make([]*state.TrackVibeProfile, len(r.vibeHistory))
+	for i, v := range r.vibeHistory {
+		if v != nil {
+			cpy := *v
+			res[i] = &cpy
+		}
+	}
+	return res
+}
+
 // UpdateSessionVibeFromTrack classifies the track, adds it to the recent vibe history,
-// and updates the room's session vibe profile using a weighted aggregate of recent tracks.
-func (r *RoomState) UpdateSessionVibeFromTrack(t *state.Track) {
+// and updates the room's session vibe profile. When a manual track with high confidence
+// (>= 0.65) is played, it immediately switches the active dominant profile and resets
+// the active history window so that older history does not overpower the user's explicit intent.
+func (r *RoomState) UpdateSessionVibeFromTrack(t *state.Track, isManual ...bool) {
 	if r == nil || t == nil {
 		return
+	}
+
+	manual := true
+	if len(isManual) > 0 {
+		manual = isManual[0]
+	} else if t.Requester == "🎵 ᴀᴜᴛᴏᴘʟᴀʏ" || t.IsAutoplay {
+		manual = false
 	}
 
 	profile := state.ClassifyTrack(t.Title, t.Artist)
 	t.VibeProfile = &profile
 
-	logger.Infof("[Vibe] Analyzing track: %s (Artist: %q)", t.Title, t.Artist)
+	sourceStr := "Manual"
+	if !manual {
+		sourceStr = "Autoplay"
+	}
+
+	logger.Infof("[Vibe] Analyzing track (%s): %s (Artist: %q)", sourceStr, t.Title, t.Artist)
 	logger.Infof("[Vibe] Classification: Genre=%s | Vibe=%s | Version=%s | Energy=%s | Confidence=%.2f",
 		profile.Genre, profile.Vibe, profile.Version, profile.Energy, profile.Confidence)
 
 	r.sessionVibeMu.Lock()
 	defer r.sessionVibeMu.Unlock()
 
-	// Append to recent history (bounded ring buffer of up to 8 tracks)
 	const maxHistory = 8
+
+	if manual {
+		r.lastManualVibe = &profile
+
+		hasKnownGenre := profile.Genre != state.GenreUnknown && profile.Genre != state.GenreNone
+		isHighConfidence := profile.Confidence >= 0.65 && hasKnownGenre
+
+		prevGenre := state.GenreUnknown
+		if r.dominantVibe != nil {
+			prevGenre = r.dominantVibe.Genre
+		}
+
+		if isHighConfidence {
+			// Check if this is a genre switch from previous dominant profile
+			if r.dominantVibe == nil || prevGenre == state.GenreUnknown || prevGenre != profile.Genre {
+				var prevDesc string
+				if r.dominantVibe != nil {
+					prevDesc = fmt.Sprintf("%s/%s (%s)", r.dominantVibe.Genre, r.dominantVibe.Vibe, r.dominantVibe.Energy)
+				} else {
+					prevDesc = "None"
+				}
+				newDesc := fmt.Sprintf("%s/%s (%s)", profile.Genre, profile.Vibe, profile.Energy)
+
+				logger.Infof("[Vibe] Manual profile switch detected for room %d: %s -> %s [Confidence=%.2f | OldHistory=%d tracks]",
+					r.ID, prevDesc, newDesc, profile.Confidence, len(r.vibeHistory))
+
+				// Archive previous dominant profile
+				if r.dominantVibe != nil {
+					cpy := *r.dominantVibe
+					r.historicalVibe = &cpy
+				}
+
+				// Reset active session window to prevent old history from overpowering new manual intent
+				r.vibeHistory = []*state.TrackVibeProfile{&profile}
+				dominant := profile
+				r.dominantVibe = &dominant
+				r.sessionVibe = &dominant
+
+				logger.Infof("[Vibe] Session profile updated (Manual Switch) for room %d: Genre=%s, Vibe=%s, Version=%s, Energy=%s",
+					r.ID, r.dominantVibe.Genre, r.dominantVibe.Vibe, r.dominantVibe.Version, r.dominantVibe.Energy)
+				return
+			}
+
+			// Manual track in the same genre: reinforce dominant profile and append to active window
+			r.vibeHistory = append(r.vibeHistory, &profile)
+			if len(r.vibeHistory) > maxHistory {
+				r.vibeHistory = r.vibeHistory[len(r.vibeHistory)-maxHistory:]
+			}
+			aggregated := computeWeightedVibeProfile(r.vibeHistory)
+			r.dominantVibe = &aggregated
+			r.sessionVibe = &aggregated
+
+			logger.Infof("[Vibe] Session profile reinforced (Manual Same Genre) for room %d (History=%d tracks): Genre=%s, Vibe=%s, Version=%s, Energy=%s",
+				r.ID, len(r.vibeHistory), aggregated.Genre, aggregated.Vibe, aggregated.Version, aggregated.Energy)
+			return
+		}
+
+		// Low-confidence manual track (< 0.65 or Unknown genre)
+		if r.dominantVibe != nil && r.dominantVibe.Genre != state.GenreUnknown && r.dominantVibe.Genre != state.GenreNone {
+			logger.Infof("[Vibe] Low-confidence manual track (Confidence=%.2f, Genre=%s). Retaining dominant profile: Genre=%s, Vibe=%s for room %d",
+				profile.Confidence, profile.Genre, r.dominantVibe.Genre, r.dominantVibe.Vibe, r.ID)
+			r.vibeHistory = append(r.vibeHistory, &profile)
+			if len(r.vibeHistory) > maxHistory {
+				r.vibeHistory = r.vibeHistory[len(r.vibeHistory)-maxHistory:]
+			}
+			// Keep dominantVibe retained without letting low-confidence track overwrite it
+			return
+		}
+
+		// Initial manual track with low confidence or no existing dominant profile
+		r.vibeHistory = append(r.vibeHistory, &profile)
+		if len(r.vibeHistory) > maxHistory {
+			r.vibeHistory = r.vibeHistory[len(r.vibeHistory)-maxHistory:]
+		}
+		aggregated := computeWeightedVibeProfile(r.vibeHistory)
+		r.dominantVibe = &aggregated
+		r.sessionVibe = &aggregated
+		return
+	}
+
+	// Autoplay track
 	r.vibeHistory = append(r.vibeHistory, &profile)
 	if len(r.vibeHistory) > maxHistory {
 		r.vibeHistory = r.vibeHistory[len(r.vibeHistory)-maxHistory:]
 	}
-
-	// Calculate weighted session profile
 	aggregated := computeWeightedVibeProfile(r.vibeHistory)
+
+	// Anchor genre with lastManualVibe so autoplay doesn't drift away to unknown
+	if r.lastManualVibe != nil && r.lastManualVibe.Genre != state.GenreUnknown && r.lastManualVibe.Genre != state.GenreNone {
+		if aggregated.Genre == state.GenreUnknown || aggregated.Genre == state.GenreNone {
+			aggregated.Genre = r.lastManualVibe.Genre
+		}
+	}
+
+	r.dominantVibe = &aggregated
 	r.sessionVibe = &aggregated
 
-	logger.Infof("[Vibe] Session profile updated successfully for room %d (History=%d tracks): Genre=%s, Vibe=%s, Version=%s, Energy=%s",
+	logger.Infof("[Vibe] Session profile updated (Autoplay) for room %d (History=%d tracks): Genre=%s, Vibe=%s, Version=%s, Energy=%s",
 		r.ID, len(r.vibeHistory), aggregated.Genre, aggregated.Vibe, aggregated.Version, aggregated.Energy)
 }
 
 func computeWeightedVibeProfile(history []*state.TrackVibeProfile) state.TrackVibeProfile {
+	return ComputeWeightedVibeProfile(history)
+}
+
+// ComputeWeightedVibeProfile calculates the weighted vibe profile for a slice of tracks.
+func ComputeWeightedVibeProfile(history []*state.TrackVibeProfile) state.TrackVibeProfile {
 	if len(history) == 0 {
 		return state.TrackVibeProfile{
 			Genre:      state.GenreUnknown,
@@ -780,6 +944,22 @@ func computeWeightedVibeProfile(history []*state.TrackVibeProfile) state.TrackVi
 		if vote > maxVibeVote {
 			maxVibeVote = vote
 			topVibe = v
+		}
+	}
+
+	// Infer default vibe if genre is known but vibe wasn't explicitly tagged
+	if topVibe == state.VibeUnknown || topVibe == state.VibeNone {
+		switch topGenre {
+		case state.GenrePhonk:
+			topVibe = state.VibeDark
+		case state.GenreEDM:
+			topVibe = state.VibeEnergetic
+		case state.GenreLofi:
+			topVibe = state.VibeChill
+		case state.GenreClassical:
+			topVibe = state.VibePeaceful
+		case state.GenreInstrumental:
+			topVibe = state.VibeRelaxing
 		}
 	}
 

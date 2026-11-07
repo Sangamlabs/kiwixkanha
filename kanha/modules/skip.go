@@ -221,7 +221,7 @@ func handleSkip(c *td.Client, m *td.Message, cplay bool) error {
 	}
 
 	r.SetActiveTrackGen(transGen)
-	r.UpdateSessionVibeFromTrack(t)
+	r.UpdateSessionVibeFromTrack(t, true)
 
 	statusMsg = sendNowPlaying(c, statusMsg, chatID, r, t)
 	if statusMsg != nil {
@@ -334,6 +334,7 @@ func handleAutoplaySkip(c *td.Client, m *td.Message, cplay bool) error {
 	}
 
 	r.SetActiveTrackGen(transGen)
+	r.UpdateSessionVibeFromTrack(next, false)
 
 	statusMsg = sendNowPlaying(c, statusMsg, chatID, r, next)
 	if statusMsg != nil {

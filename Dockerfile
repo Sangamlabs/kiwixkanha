@@ -17,7 +17,7 @@ RUN go mod download
 COPY install.sh ./
 COPY . .
 
-RUN mkdir -p /build/config/cookies && \
+RUN mkdir -p /build/config/cookie /build/config/cookies && \
     chmod +x install.sh && \
     ./install.sh -n -t --quiet --skip-summary && \
     CGO_ENABLED=1 go build -v -trimpath -ldflags="-w -s" -o app ./cmd/app/
@@ -57,6 +57,7 @@ WORKDIR /app
 
 COPY --from=builder /build/app /app/app
 COPY --from=builder /build/libtdjson.so* /app/
+COPY --from=builder /build/config/cookie /app/config/cookie
 COPY --from=builder /build/config/cookies /app/config/cookies
 COPY --from=builder /build/assets /app/assets
 RUN chmod 0755 /app/libtdjson.so* && chown -R appuser:appuser /app

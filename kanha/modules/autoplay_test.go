@@ -151,9 +151,9 @@ func TestSkipWithQueuedSongsPlaysNext(t *testing.T) {
 	_ = r.Play(track1, "/tmp/t1.mp3", false)
 
 	track2 := &state.Track{
-		ID:        "track_2_queued",
-		Title:     "Track 2 Queued",
-		Requester: "User2",
+		ID:         "track_2_queued",
+		Title:      "Track 2 Queued",
+		Requester:  "User2",
 		IsAutoplay: false,
 	}
 	_ = r.Play(track2, "", false) // Enqueue track 2
@@ -920,3 +920,219 @@ func TestArtistDiversityBonus(t *testing.T) {
 	}
 }
 
+// TestRegressionCaseA_ManualSwitchOverpowersLongHistory verifies that when 6 Bollywood
+// tracks are followed by a manual Phonk track with high confidence, the session active
+// profile immediately switches to Phonk and old history does not overpower the user's intent.
+func TestRegressionCaseA_ManualSwitchOverpowersLongHistory(t *testing.T) {
+	chatID := int64(778811)
+	room := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	bollywoodTracks := []*state.Track{
+		{ID: "bw_1", Title: "Dil To Pagal Hai", Artist: "Lata Mangeshkar, Udit Narayan"},
+		{ID: "bw_2", Title: "Tum Hi Ho", Artist: "Arijit Singh"},
+		{ID: "bw_3", Title: "Channa Mereya", Artist: "Arijit Singh"},
+		{ID: "bw_4", Title: "Kal Ho Naa Ho", Artist: "Sonu Nigam"},
+		{ID: "bw_5", Title: "Kabira", Artist: "Tochi Raina, Rekha Bhardwaj"},
+		{ID: "bw_6", Title: "Kesariya", Artist: "Arijit Singh"},
+	}
+
+	for _, trk := range bollywoodTracks {
+		room.UpdateSessionVibeFromTrack(trk, true)
+	}
+
+	profBefore := room.GetVibeProfile()
+	if profBefore.Genre != state.GenreBollywood {
+		t.Fatalf("Expected Bollywood before switch, got: %s", profBefore.Genre)
+	}
+	if profBefore.Vibe != state.VibeRomantic {
+		t.Fatalf("Expected Romantic before switch, got: %s", profBefore.Vibe)
+	}
+
+	// 7th track: Manual Phonk track (MONTAGEM SAHARA (Slowed))
+	phonkTrack := &state.Track{
+		ID:        "ph_1",
+		Title:     "MONTAGEM SAHARA (Slowed)",
+		Artist:    "Various Artists",
+		Requester: "User",
+	}
+	room.UpdateSessionVibeFromTrack(phonkTrack, true)
+
+	profAfter := room.GetVibeProfile()
+	if profAfter.Genre != state.GenrePhonk {
+		t.Fatalf("Test A Failed: Expected GenrePhonk after manual switch, got: %s", profAfter.Genre)
+	}
+	if profAfter.Version != state.VersionSlowed {
+		t.Fatalf("Test A Failed: Expected VersionSlowed after manual switch, got: %s", profAfter.Version)
+	}
+	if profAfter.Vibe != state.VibeChill {
+		t.Fatalf("Test A Failed: Expected VibeChill for slowed phonk, got: %s", profAfter.Vibe)
+	}
+	if profAfter.Energy != "Low" {
+		t.Fatalf("Test A Failed: Expected Energy 'Low' for slowed phonk, got: %s", profAfter.Energy)
+	}
+
+	histProf := room.GetHistoricalVibeProfile()
+	if histProf == nil || histProf.Genre != state.GenreBollywood {
+		t.Fatalf("Test A Failed: Expected historical profile to be Bollywood, got: %v", histProf)
+	}
+
+	activeHist := room.GetVibeHistory()
+	if len(activeHist) != 1 {
+		t.Fatalf("Test A Failed: Expected active vibe history window reset to 1 track, got: %d", len(activeHist))
+	}
+}
+
+// TestRegressionCaseB_PhonkAutoplayContinuity verifies that when in Phonk session,
+// subsequent Phonk tracks maintain the profile and Bollywood candidates are penalized.
+func TestRegressionCaseB_PhonkAutoplayContinuity(t *testing.T) {
+	chatID := int64(778822)
+	room := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	// User plays manual Phonk track
+	phonk1 := &state.Track{
+		ID:        "ph_1",
+		Title:     "MONTAGEM SAHARA (Slowed)",
+		Artist:    "Various Artists",
+		Requester: "User",
+	}
+	room.UpdateSessionVibeFromTrack(phonk1, true)
+
+	// Autoplay plays second Phonk track
+	phonk2 := &state.Track{
+		ID:         "ph_2",
+		Title:      "KORDHELL - MURDER IN MY MIND (DRIFT PHONK)",
+		Artist:     "Kordhell",
+		Requester:  "🎵 ᴀᴜᴛᴏᴘʟᴀʏ",
+		IsAutoplay: true,
+	}
+	room.UpdateSessionVibeFromTrack(phonk2, false)
+
+	curProf := room.GetVibeProfile()
+	if curProf.Genre != state.GenrePhonk {
+		t.Fatalf("Test B Failed: Expected GenrePhonk, got: %s", curProf.Genre)
+	}
+
+	// Score candidates
+	phonkCand := state.ClassifyTrack("METAMORPHOSIS (Aggressive Phonk)", "INTERWORLD")
+	bollyCand := state.ClassifyTrack("Arijit Singh - Tum Hi Ho", "Arijit Singh")
+
+	scorePhonk, reasonsPhonk := curProf.ScoreCandidateDetails(phonkCand, phonk2.Artist, "INTERWORLD")
+	scoreBolly, reasonsBolly := curProf.ScoreCandidateDetails(bollyCand, phonk2.Artist, "Arijit Singh")
+
+	if scorePhonk < 70 {
+		t.Fatalf("Test B Failed: Expected Phonk candidate score >= 70, got: %d (Reasons: %v)", scorePhonk, reasonsPhonk)
+	}
+	if scoreBolly >= 0 {
+		t.Fatalf("Test B Failed: Expected Bollywood candidate score < 0 (conflicting genre penalty), got: %d (Reasons: %v)", scoreBolly, reasonsBolly)
+	}
+}
+
+// TestRegressionCaseC_LowConfidenceTrackDoesNotRevertDominant verifies that playing
+// a low-confidence or unknown track retains the existing reliable dominant profile.
+func TestRegressionCaseC_LowConfidenceTrackDoesNotRevertDominant(t *testing.T) {
+	chatID := int64(778833)
+	room := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	// Seed with Phonk
+	phonk := &state.Track{
+		ID:        "ph_1",
+		Title:     "MONTAGEM SAHARA (Slowed)",
+		Artist:    "Various Artists",
+		Requester: "User",
+	}
+	room.UpdateSessionVibeFromTrack(phonk, true)
+
+	// Low-confidence / unknown track
+	unknownTrack := &state.Track{
+		ID:        "unk_1",
+		Title:     "Random User Sound 987654321",
+		Artist:    "Unknown",
+		Requester: "User",
+	}
+	room.UpdateSessionVibeFromTrack(unknownTrack, true)
+
+	curProf := room.GetVibeProfile()
+	if curProf.Genre != state.GenrePhonk {
+		t.Fatalf("Test C Failed: Expected dominant GenrePhonk to be retained, got: %s", curProf.Genre)
+	}
+}
+
+// TestRegressionCaseD_ManualSwitchBackToBollywood verifies that when user manually
+// switches from Phonk back to Bollywood, the session profile switches immediately.
+func TestRegressionCaseD_ManualSwitchBackToBollywood(t *testing.T) {
+	chatID := int64(778844)
+	room := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	// Seed with Phonk
+	phonk := &state.Track{
+		ID:        "ph_1",
+		Title:     "MONTAGEM SAHARA (Slowed)",
+		Artist:    "Various Artists",
+		Requester: "User",
+	}
+	room.UpdateSessionVibeFromTrack(phonk, true)
+
+	// Manual switch to Bollywood
+	bolly := &state.Track{
+		ID:        "bw_1",
+		Title:     "Arijit Singh - Tum Hi Ho",
+		Artist:    "Arijit Singh",
+		Requester: "User",
+	}
+	room.UpdateSessionVibeFromTrack(bolly, true)
+
+	curProf := room.GetVibeProfile()
+	if curProf.Genre != state.GenreBollywood {
+		t.Fatalf("Test D Failed: Expected GenreBollywood after manual switch, got: %s", curProf.Genre)
+	}
+
+	histProf := room.GetHistoricalVibeProfile()
+	if histProf == nil || histProf.Genre != state.GenrePhonk {
+		t.Fatalf("Test D Failed: Expected historical profile to be Phonk, got: %v", histProf)
+	}
+}
+
+// TestRegressionCaseE_RecencyWeightedAggregation verifies that within an active session window,
+// recency weighting properly influences the session profile.
+func TestRegressionCaseE_RecencyWeightedAggregation(t *testing.T) {
+	p1 := state.ClassifyTrack("Dil To Pagal Hai", "Lata Mangeshkar, Udit Narayan") // Bollywood Romantic
+	p2 := state.ClassifyTrack("Chaiyya Chaiyya", "Sukhwinder Singh")               // Bollywood Energetic
+	p3 := state.ClassifyTrack("Malhari", "Vishal Dadlani")                         // Bollywood Energetic
+
+	history := []*state.TrackVibeProfile{&p1, &p2, &p3}
+	aggregated := core.ComputeWeightedVibeProfile(history)
+
+	if aggregated.Genre != state.GenreBollywood {
+		t.Fatalf("Test E Failed: Expected GenreBollywood, got: %s", aggregated.Genre)
+	}
+	// Recent energetic tracks have higher weights (1.0 + 0.75*i)
+	if aggregated.Vibe != state.VibeEnergetic && aggregated.Vibe != state.VibeParty {
+		t.Fatalf("Test E Failed: Expected VibeEnergetic or VibeParty from recency weights, got: %s", aggregated.Vibe)
+	}
+}
+
+// TestRegressionCaseF_PlayedTrackExclusion verifies that played and failed tracks are
+// strictly excluded from candidate selection.
+func TestRegressionCaseF_PlayedTrackExclusion(t *testing.T) {
+	chatID := int64(778855)
+	room := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	track1 := &state.Track{ID: "cand_1", Title: "Song 1"}
+	room.AddPlayed(track1)
+	apMarkPlayed(chatID, "cand_2")
+
+	if !room.HasPlayed("cand_1", "Song 1") {
+		t.Fatalf("Test F Failed: Expected cand_1 to be marked as played in room")
+	}
+	if !apIsPlayed(chatID, "cand_2") {
+		t.Fatalf("Test F Failed: Expected cand_2 to be marked as played in ap store")
+	}
+	if room.HasPlayed("cand_3", "Song 3") {
+		t.Fatalf("Test F Failed: Did not expect cand_3 to be marked as played")
+	}
+}

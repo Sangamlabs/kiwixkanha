@@ -170,13 +170,16 @@ func ClassifyTrack(title string, optionalArtist ...string) TrackVibeProfile {
 	genreDetected := false
 	genreConfidenceBonus := 0.0
 
-	// 2A. Phonk
+	// 2A. Phonk & Funk Automotivo
 	if containsAny(combined,
 		"phonk", "drift phonk", "brazilian phonk", "kordhell", "dvrst", "interworld",
 		"pharmacist", "kaito shoma", "mishashi sensei", "playaphonk", "metamorphosis",
-		"montagem", "el control", "schizo", "shadow dance", "dxrk", "rapture",
-		"tokyodrift", "tokyo drift", "murder in my mind", "close eyes", "neon blade",
-		"vendetta", "sahara", "gigachad", "giga chad", "funk do",
+		"montagem", "montage", "mega montagem", "el control", "schizo", "shadow dance",
+		"dxrk", "rapture", "tokyodrift", "tokyo drift", "murder in my mind", "close eyes",
+		"neon blade", "vendetta", "sahara", "gigachad", "giga chad", "funk do",
+		"funk automotivo", "automotivo", "brazilian funk", "baile funk", "funk brasil",
+		"funk brasileiro", "slowed phonk", "aggressive phonk", "chill phonk", "raw phonk",
+		"hard phonk", "memphis phonk", "cowbell phonk", "drift",
 	) {
 		profile.Genre = GenrePhonk
 		genreDetected = true
@@ -355,8 +358,10 @@ func ClassifyTrack(title string, optionalArtist ...string) TrackVibeProfile {
 	if profile.Vibe == VibeUnknown || profile.Vibe == VibeNone {
 		switch profile.Genre {
 		case GenrePhonk:
-			if profile.Version == VersionSlowed || profile.Version == VersionSlowedReverb {
+			if profile.Version == VersionSlowed || profile.Version == VersionSlowedReverb || containsAny(combined, "chill phonk", "chill", "relax") {
 				profile.Vibe = VibeChill
+			} else if containsAny(combined, "aggressive phonk", "raw phonk", "hard phonk", "rage") {
+				profile.Vibe = VibeAggressive
 			} else {
 				profile.Vibe = VibeDark
 			}
@@ -533,7 +538,7 @@ func isRelatedGenre(g1, g2 GenreType) bool {
 	case GenreRap:
 		return g2 == GenreHipHop
 	case GenrePhonk:
-		return g2 == GenreElectronic
+		return g2 == GenreElectronic || g2 == GenreHipHop
 	case GenreEDM:
 		return g2 == GenreElectronic || g2 == GenrePop
 	case GenreElectronic:

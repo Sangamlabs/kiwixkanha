@@ -542,7 +542,7 @@ func playTracksAndRespond(
 
 		if i == 0 && (!isActive || force) && transGen != 0 {
 			r.SetActiveTrackGen(transGen)
-			r.UpdateSessionVibeFromTrack(track)
+			r.UpdateSessionVibeFromTrack(track, true)
 		}
 
 		sendPlayLogs(c, m, track, (isActive && !force) || i > 0)

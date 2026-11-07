@@ -367,8 +367,11 @@ func streamEndHandler(
 
 	if isAutoplay {
 		r.SetActiveTrackGen(workerGen)
-		r.UpdateSessionVibeFromTrack(t)
+		r.UpdateSessionVibeFromTrack(t, false)
 		logger.Infof("[Autoplay] Playback started successfully and session profile updated for chat %d", chatID)
+	} else {
+		r.UpdateSessionVibeFromTrack(t, true)
+		logger.Infof("[Playback] Queued manual track started playing and updated session profile for chat %d", chatID)
 	}
 
 	statusMsg = sendNowPlaying(c, statusMsg, cid, r, t)
