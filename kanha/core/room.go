@@ -88,6 +88,10 @@ type RoomState struct {
 	autoplayCancel    context.CancelFunc
 	autoplayGen       uint64
 	autoplayCandidate *state.Track
+
+	// Session vibe tracking
+	sessionVibeMu sync.RWMutex
+	sessionVibe   *state.TrackVibeProfile
 }
 
 // Room management
@@ -644,6 +648,44 @@ func (r *RoomState) IsNaturalStreamEnd(gen uint64) (bool, string) {
 	}
 
 	return true, "ok"
+}
+
+// Session Vibe Profile Management
+
+// SetVibeProfile sets the room's current session vibe profile.
+func (r *RoomState) SetVibeProfile(p *state.TrackVibeProfile) {
+	if r == nil {
+		return
+	}
+	r.sessionVibeMu.Lock()
+	defer r.sessionVibeMu.Unlock()
+	r.sessionVibe = p
+}
+
+// GetVibeProfile returns the current session vibe profile, or nil if none.
+func (r *RoomState) GetVibeProfile() *state.TrackVibeProfile {
+	if r == nil {
+		return nil
+	}
+	r.sessionVibeMu.RLock()
+	defer r.sessionVibeMu.RUnlock()
+	if r.sessionVibe == nil {
+		return nil
+	}
+	cpy := *r.sessionVibe
+	return &cpy
+}
+
+// UpdateSessionVibeFromTrack classifies the track and stores it as the session vibe profile.
+func (r *RoomState) UpdateSessionVibeFromTrack(t *state.Track) {
+	if r == nil || t == nil {
+		return
+	}
+	profile := state.ClassifyTrack(t.Title)
+	t.VibeProfile = &profile
+	r.SetVibeProfile(&profile)
+	logger.Infof("[Vibe] Session profile updated for room %d from track %q: Genre=%s, Vibe=%s, Version=%s, Energy=%s",
+		r.ID, t.Title, profile.Genre, profile.Vibe, profile.Version, profile.Energy)
 }
 
 // State checks

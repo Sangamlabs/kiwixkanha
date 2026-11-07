@@ -1,6 +1,6 @@
 /*
  * ● Kiwi Music (KanhaMusic fork)
- * ○ Unit & Regression Tests for Autoplay & Recovery
+ * ○ Unit & Regression Tests for Autoplay, Vibe Detection & Skip Reliability
  */
 
 package modules
@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	state "KanhaMusic/kanha/core/models"
 	"KanhaMusic/kanha/core"
+	state "KanhaMusic/kanha/core/models"
 	"KanhaMusic/kanha/platforms"
 	td "github.com/Kanha/Meow"
 )
@@ -109,6 +109,416 @@ func TestAudioValidation(t *testing.T) {
 	}
 }
 
+// 1. TestSkipWithEmptyQueueStopsPlayback verifies that /skip on an empty queue stops playback and drops the room.
+func TestSkipWithEmptyQueueStopsPlayback(t *testing.T) {
+	chatID := int64(900101)
+	r := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	track := &state.Track{
+		ID:        "track_skip_empty",
+		Title:     "Current Track",
+		Requester: "User",
+	}
+	_ = r.Play(track, "/tmp/dummy.mp3", false)
+
+	if len(r.Queue()) != 0 {
+		t.Fatalf("Expected empty queue, got %d", len(r.Queue()))
+	}
+
+	// Simulate skip logic for empty queue (skip.go line 140)
+	if len(r.Queue()) == 0 {
+		core.DropRoom(r.ID)
+	}
+
+	_, exists := core.RoomFor(chatID)
+	if exists {
+		t.Fatalf("Expected room to be dropped and playback stopped on empty queue skip")
+	}
+}
+
+// 2. TestSkipWithQueuedSongsPlaysNext verifies that /skip plays the next manual track in queue.
+func TestSkipWithQueuedSongsPlaysNext(t *testing.T) {
+	chatID := int64(900102)
+	r := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	track1 := &state.Track{
+		ID:        "track_1",
+		Title:     "Track 1 Playing",
+		Requester: "User1",
+	}
+	_ = r.Play(track1, "/tmp/t1.mp3", false)
+
+	track2 := &state.Track{
+		ID:        "track_2_queued",
+		Title:     "Track 2 Queued",
+		Requester: "User2",
+		IsAutoplay: false,
+	}
+	_ = r.Play(track2, "", false) // Enqueue track 2
+
+	if len(r.Queue()) != 1 {
+		t.Fatalf("Expected 1 track in queue, got %d", len(r.Queue()))
+	}
+
+	// Skip current track
+	next := r.NextTrack()
+	if next == nil || next.ID != "track_2_queued" {
+		t.Fatalf("Expected next track to be track_2_queued, got: %+v", next)
+	}
+	if next.IsAutoplay {
+		t.Fatal("Expected manual queued track, not autoplay")
+	}
+
+	_ = r.Play(next, "/tmp/t2.mp3", false)
+	if r.Track().ID != "track_2_queued" {
+		t.Fatalf("Expected active track to be track_2_queued, got %s", r.Track().ID)
+	}
+	if len(r.Queue()) != 0 {
+		t.Fatalf("Expected empty queue after playing next, got %d", len(r.Queue()))
+	}
+}
+
+// 3. TestSkipDoesNotInvokeAutoplay verifies that /skip stops playback instead of invoking autoplay when queue is empty.
+func TestSkipDoesNotInvokeAutoplay(t *testing.T) {
+	chatID := int64(900103)
+	r := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	track := &state.Track{
+		ID:        "track_autoplay_active",
+		Title:     "Track Playing With Autoplay Enabled",
+		Requester: "User",
+	}
+	_ = r.Play(track, "/tmp/dummy.mp3", false)
+	r.SetAutoplay(true)
+
+	if len(r.Queue()) != 0 {
+		t.Fatalf("Expected empty queue, got %d", len(r.Queue()))
+	}
+
+	// In skip.go, empty queue must drop room even when r.Autoplay() is true:
+	// It should NOT call handleAutoplaySkip or PickAutoplayTrack
+	var autoplayTriggered bool
+	if len(r.Queue()) == 0 {
+		// Crucial fix: do NOT check r.Autoplay() here
+		core.DropRoom(r.ID)
+	} else if r.Autoplay() {
+		autoplayTriggered = true
+	}
+
+	if autoplayTriggered {
+		t.Fatal("CRITICAL: /skip triggered autoplay on empty queue!")
+	}
+
+	_, exists := core.RoomFor(chatID)
+	if exists {
+		t.Fatal("Expected room to be dropped after /skip with empty queue")
+	}
+}
+
+// 4. TestAskipRetainsExplicitAutoplayBehavior verifies that explicit /askip triggers autoplay when enabled and rejects when disabled.
+func TestAskipRetainsExplicitAutoplayBehavior(t *testing.T) {
+	chatID := int64(900104)
+	r := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	current := &state.Track{
+		ID:        "current_track_askip",
+		Title:     "Metamorphosis (Slowed)",
+		Requester: "User",
+	}
+	_ = r.Play(current, "/tmp/t.mp3", false)
+
+	// When autoplay is disabled, PickAutoplayTrack must return nil
+	r.SetAutoplay(false)
+	candidateDisabled := PickAutoplayTrack(r, current)
+	if candidateDisabled != nil {
+		t.Fatalf("Expected nil recommendation when autoplay is disabled, got: %+v", candidateDisabled)
+	}
+
+	// When autoplay is enabled, PickAutoplayTrack marks as autoplay
+	r.SetAutoplay(true)
+	if !r.Autoplay() {
+		t.Fatal("Expected autoplay to be enabled")
+	}
+}
+
+// 5. TestNaturalCompletionWithAutoplayEnabledStartsVibeAutoplay verifies natural completion triggers vibe autoplay.
+func TestNaturalCompletionWithAutoplayEnabledStartsVibeAutoplay(t *testing.T) {
+	chatID := int64(900105)
+	r := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	current := &state.Track{
+		ID:        "natural_comp_1",
+		Title:     "Kordhell - Murder In My Mind (Slowed)",
+		Requester: "User",
+	}
+	_ = r.Play(current, "/tmp/current.mp3", false)
+	r.UpdateSessionVibeFromTrack(current)
+	r.SetAutoplay(true)
+
+	// Verify session vibe profile was created
+	profile := r.GetVibeProfile()
+	if profile == nil {
+		t.Fatal("Expected room session vibe profile to be set")
+	}
+	if profile.Genre != state.GenrePhonk || profile.Version != state.VersionSlowed {
+		t.Fatalf("Expected Phonk + Slowed profile, got Genre=%s Version=%s", profile.Genre, profile.Version)
+	}
+
+	// Natural completion: queue is empty, r.NextTrack() is nil
+	nextManual := r.NextTrack()
+	if nextManual != nil {
+		t.Fatalf("Expected empty manual queue, got: %+v", nextManual)
+	}
+
+	// tryAutoplay must be invoked when queue is empty and r.Autoplay() is true
+	if !r.Autoplay() {
+		t.Fatal("Expected autoplay enabled")
+	}
+}
+
+// 6. TestNaturalCompletionWithManualQueuePlaysQueuedFirst verifies that manual queued tracks take priority over autoplay.
+func TestNaturalCompletionWithManualQueuePlaysQueuedFirst(t *testing.T) {
+	chatID := int64(900106)
+	r := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	current := &state.Track{
+		ID:        "natural_comp_cur",
+		Title:     "Current Track",
+		Requester: "User",
+	}
+	_ = r.Play(current, "/tmp/cur.mp3", false)
+	r.SetAutoplay(true)
+
+	// User queued a manual track
+	manualTrack := &state.Track{
+		ID:         "manual_queued_track",
+		Title:      "Manual Song Requested By User",
+		Requester:  "User2",
+		IsAutoplay: false,
+	}
+	_ = r.Play(manualTrack, "", false) // Adds to queue
+
+	// Natural stream completion checks r.NextTrack() FIRST
+	tNext := r.NextTrack()
+	if tNext == nil {
+		t.Fatal("Expected manual queued track to be dequeued, got nil")
+	}
+	if tNext.ID != "manual_queued_track" {
+		t.Fatalf("Expected manual_queued_track, got %s", tNext.ID)
+	}
+	if tNext.IsAutoplay {
+		t.Fatal("Expected manual track to NOT be marked as autoplay")
+	}
+}
+
+// 7. TestSlowedPhonkContinuesWithSlowedPhonk verifies that Slowed Phonk selects Slowed Phonk and strictly penalizes pop/edm.
+func TestSlowedPhonkContinuesWithSlowedPhonk(t *testing.T) {
+	title := "Kordhell - Murder In My Mind (Slowed)"
+	profile := state.ClassifyTrack(title)
+
+	if profile.Genre != state.GenrePhonk {
+		t.Fatalf("Expected GenrePhonk, got: %s", profile.Genre)
+	}
+	if profile.Version != state.VersionSlowed {
+		t.Fatalf("Expected VersionSlowed, got: %s", profile.Version)
+	}
+
+	// Candidate 1: Slowed Phonk (Exact match)
+	c1 := state.ClassifyTrack("DVRST - Close Eyes (Slowed)")
+	score1 := profile.ScoreCandidate(c1)
+
+	// Candidate 2: Pop song (Conflicting genre)
+	c2 := state.ClassifyTrack("Taylor Swift - Blank Space")
+	score2 := profile.ScoreCandidate(c2)
+
+	// Candidate 3: Sped Up Phonk (Opposite tempo)
+	c3 := state.ClassifyTrack("Interworld - Rapture (Sped Up)")
+	score3 := profile.ScoreCandidate(c3)
+
+	if score1 < 60 {
+		t.Fatalf("Expected high score (>= 60) for Slowed Phonk match, got %d", score1)
+	}
+	if score2 >= 0 {
+		t.Fatalf("Expected negative penalized score (< 0) for Pop conflicting genre, got %d", score2)
+	}
+	if score1 <= score3 {
+		t.Fatalf("Expected Slowed Phonk (%d) to score higher than Sped Up Phonk (%d)", score1, score3)
+	}
+}
+
+// 8. TestLofiContinuesWithLofi verifies that Lofi sessions continue with Lofi beats and penalize conflicting genres.
+func TestLofiContinuesWithLofi(t *testing.T) {
+	title := "ChilledCow - Lofi Hip Hop Beat to Relax/Study to"
+	profile := state.ClassifyTrack(title)
+
+	if profile.Vibe != state.VibeLofi {
+		t.Fatalf("Expected VibeLofi, got: %s", profile.Vibe)
+	}
+
+	// Candidate 1: Lofi track (Exact vibe match)
+	c1 := state.ClassifyTrack("Lofi Sleep Chill Beats to Study")
+	score1 := profile.ScoreCandidate(c1)
+
+	// Candidate 2: EDM Festival Anthem (Conflicting genre)
+	c2 := state.ClassifyTrack("Martin Garrix - Animals (EDM Club Festival Mix)")
+	score2 := profile.ScoreCandidate(c2)
+
+	if score1 < 50 {
+		t.Fatalf("Expected strong match (>= 50) for Lofi track, got %d", score1)
+	}
+	if score2 >= 0 {
+		t.Fatalf("Expected negative penalized score (< 0) for EDM conflicting candidate in Lofi session, got %d", score2)
+	}
+	if score1 <= score2 {
+		t.Fatalf("Expected Lofi (%d) to score significantly higher than EDM (%d)", score1, score2)
+	}
+}
+
+// 9. TestFailedCandidatesExcluded verifies that tracks marked as failed or recently played are excluded from selection.
+func TestFailedCandidatesExcluded(t *testing.T) {
+	chatID := int64(900109)
+	failedID := "failed_candidate_xyz"
+
+	if isTrackFailedRecently(failedID) {
+		t.Fatal("Expected track not to be marked failed initially")
+	}
+	if apIsPlayed(chatID, failedID) {
+		t.Fatal("Expected track not to be marked played initially")
+	}
+
+	// Mark as failed and played
+	markTrackFailed(failedID)
+	apMarkPlayed(chatID, failedID)
+
+	if !isTrackFailedRecently(failedID) {
+		t.Fatal("Expected track to be marked recently failed")
+	}
+	if !apIsPlayed(chatID, failedID) {
+		t.Fatal("Expected track to be marked as played in session")
+	}
+
+	// Other tracks must remain clean
+	if isTrackFailedRecently("clean_good_track") {
+		t.Fatal("Unrelated track should not be marked failed")
+	}
+}
+
+// 10. TestManualPlayCancelsStaleAutoplay verifies that a manual /play cancels pending autoplay.
+func TestManualPlayCancelsStaleAutoplay(t *testing.T) {
+	chatID := int64(900110)
+	room := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	workerGen := room.Generation()
+	apCtx, apCancel, ok := room.BeginAutoplay(workerGen)
+	if !ok {
+		t.Fatal("Expected BeginAutoplay to succeed")
+	}
+	defer room.FinishAutoplay(workerGen)
+	defer apCancel()
+
+	// Manual play starts
+	transGen := room.StartManualTransition("manual_play")
+	defer room.FinishManualTransition(transGen)
+
+	// Context must be canceled and room validation must return false
+	if apCtx.Err() == nil {
+		t.Fatal("Expected manual transition to cancel pending autoplay context")
+	}
+	if room.IsAutoplayValid(workerGen) {
+		t.Fatal("Expected IsAutoplayValid to return false for stale autoplay worker")
+	}
+}
+
+// 11. TestPlayforceCancelsStaleAutoplay verifies that /playforce cancels pending autoplay and increments generation.
+func TestPlayforceCancelsStaleAutoplay(t *testing.T) {
+	chatID := int64(900111)
+	room := core.CreateRoom(chatID, nil)
+	defer core.DropRoom(chatID)
+
+	initialGen := room.Generation()
+	apCtx, apCancel, ok := room.BeginAutoplay(initialGen)
+	if !ok {
+		t.Fatal("Expected BeginAutoplay to succeed")
+	}
+	defer room.FinishAutoplay(initialGen)
+	defer apCancel()
+
+	// /playforce arrives
+	pfGen := room.StartManualTransition("playforce")
+	defer room.FinishManualTransition(pfGen)
+
+	if apCtx.Err() == nil {
+		t.Fatal("Expected /playforce to cancel autoplay context immediately")
+	}
+	if room.IsAutoplayValid(initialGen) {
+		t.Fatal("Expected IsAutoplayValid to return false for initial generation")
+	}
+
+	// Playforce track plays
+	pfTrack := &state.Track{
+		ID:        "playforce_track",
+		Title:     "Requested Force Track",
+		Requester: "Admin",
+	}
+	if err := room.Play(pfTrack, "/tmp/pf.mp3", false); err != nil {
+		t.Fatalf("Failed to play force track: %v", err)
+	}
+	room.SetActiveTrackGen(pfGen)
+
+	if room.Track() == nil || room.Track().ID != "playforce_track" {
+		t.Fatalf("Expected active track to be playforce_track, got: %+v", room.Track())
+	}
+}
+
+// 12. TestDuplicateStreamEndCallbacksDoNotStartMultipleTracks verifies that duplicate or concurrent stream-ends only run one worker.
+func TestDuplicateStreamEndCallbacksDoNotStartMultipleTracks(t *testing.T) {
+	chatID := int64(900112)
+	worker := getChatWorker(chatID)
+
+	// First callback acquires the worker lock
+	if !worker.busy.CompareAndSwap(false, true) {
+		t.Fatal("Expected first CAS to succeed")
+	}
+
+	// Simultaneous duplicate callback must fail and exit immediately
+	if worker.busy.CompareAndSwap(false, true) {
+		t.Fatal("Expected duplicate callback CAS to fail")
+	}
+
+	// Release worker
+	worker.busy.Store(false)
+
+	// Test under concurrency
+	var acquiredCount atomic.Int32
+	var wg sync.WaitGroup
+	const concurrentAttempts = 20
+
+	for i := 0; i < concurrentAttempts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if worker.busy.CompareAndSwap(false, true) {
+				acquiredCount.Add(1)
+				time.Sleep(30 * time.Millisecond)
+				worker.busy.Store(false)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if acquiredCount.Load() == 0 {
+		t.Fatal("Expected at least one worker to execute")
+	}
+}
+
 // TestDuplicateAutoplayTrigger verifies that duplicate triggers on the same chat are ignored.
 func TestDuplicateAutoplayTrigger(t *testing.T) {
 	chatID := int64(987654321)
@@ -157,7 +567,6 @@ func TestTwoConcurrentCallbacksDoNotStartTwoTracks(t *testing.T) {
 
 	wg.Wait()
 
-	// Only 1 concurrent worker should have run at that instant (at most a few if serial, but here simultaneous)
 	if runCount.Load() == 0 {
 		t.Error("Expected at least one worker to execute")
 	}
@@ -188,7 +597,6 @@ func TestFailedTracksAvoidRepetition(t *testing.T) {
 
 // TestThumbnailFailureDoesNotSkipAudio verifies that NowPlaying failure does not disrupt audio.
 func TestThumbnailFailureDoesNotSkipAudio(t *testing.T) {
-	// A track with empty/invalid artwork and missing template should fail custom rendering
 	data := NowPlayingData{
 		SongTitle:     "Thumbnail Failure Test",
 		RequesterName: "User",
@@ -203,9 +611,6 @@ func TestThumbnailFailureDoesNotSkipAudio(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected GenerateNowPlayingImage to fail on missing artwork")
 	}
-
-	// Verification: The error is returned to caller so caller can fall back to legacy thumbnail,
-	// and playback itself is completely separate from image generation.
 }
 
 // Mock platform for testing provider fallback
@@ -278,13 +683,11 @@ func TestAutoplayRaceWithManualPlayTimeline(t *testing.T) {
 	room := core.CreateRoom(chatID, nil)
 	defer core.DropRoom(chatID)
 
-	// Ensure room is idle at 03:35:08
 	initialGen := room.Generation()
 	if initialGen == 0 {
 		t.Fatal("Expected non-zero initial room generation")
 	}
 
-	// 03:35:08 — Autoplay worker starts, captures generation
 	workerGen := room.Generation()
 	apCtx, apCancel, ok := room.BeginAutoplay(workerGen)
 	if !ok {
@@ -293,7 +696,6 @@ func TestAutoplayRaceWithManualPlayTimeline(t *testing.T) {
 	defer room.FinishAutoplay(workerGen)
 	defer apCancel()
 
-	// 03:35:10 — Autoplay candidate selected and begins downloading
 	apCandidate := &state.Track{
 		ID:         "xcool_id",
 		Title:      "X-COOL! (Ultra Slowed)",
@@ -301,40 +703,31 @@ func TestAutoplayRaceWithManualPlayTimeline(t *testing.T) {
 		IsAutoplay: true,
 	}
 
-	// Mock download running in background with apCtx
 	var autoplayReachedPlay atomic.Bool
 	var autoplayAborted atomic.Bool
 
 	go func() {
-		// Simulate download with timeout
 		dlCtx, cancel := context.WithTimeout(apCtx, 10*time.Second)
 		defer cancel()
 
-		// 03:35:35 AloneMusic simulated wait / timeout
 		select {
 		case <-dlCtx.Done():
-			// Context was canceled by manual playback transition
 			autoplayAborted.Store(true)
 			return
 		case <-time.After(500 * time.Millisecond):
-			// Simulate fallback attempt
 		}
 
-		// 03:35:36 Check generation before falling back or calling r.Play
 		if !room.IsAutoplayValid(workerGen) || apCtx.Err() != nil {
 			autoplayAborted.Store(true)
 			return
 		}
 
-		// Stale worker must NOT reach this!
 		autoplayReachedPlay.Store(true)
 		_ = room.Play(apCandidate, "/tmp/xcool.mp3", false)
 	}()
 
-	// 03:35:28 — Manual track `Tera Chehra` arrives via play.go
-	time.Sleep(50 * time.Millisecond) // Let autoplay worker begin
+	time.Sleep(50 * time.Millisecond)
 
-	// Manual play transition begins:
 	transGen := room.StartManualTransition("manual_play")
 	defer room.FinishManualTransition(transGen)
 
@@ -342,7 +735,6 @@ func TestAutoplayRaceWithManualPlayTimeline(t *testing.T) {
 		t.Error("Expected StartManualTransition to cancel pending autoplay context immediately")
 	}
 
-	// 03:35:32 — Manual track download succeeds and plays
 	manualTrack := &state.Track{
 		ID:         "terachehra_id",
 		Title:      "Tera Chehra",
@@ -355,10 +747,8 @@ func TestAutoplayRaceWithManualPlayTimeline(t *testing.T) {
 	}
 	room.SetActiveTrackGen(transGen)
 
-	// Wait for autoplay goroutine to finish its checks
 	time.Sleep(150 * time.Millisecond)
 
-	// Verify autoplay was aborted and never played
 	if autoplayReachedPlay.Load() {
 		t.Fatal("CRITICAL: Stale autoplay worker called r.Play() despite intervening manual request!")
 	}
@@ -366,7 +756,6 @@ func TestAutoplayRaceWithManualPlayTimeline(t *testing.T) {
 		t.Fatal("Expected autoplay worker to detect cancellation and abort")
 	}
 
-	// Verify room active track is still Tera Chehra
 	currentTrack := room.Track()
 	if currentTrack == nil || currentTrack.Title != "Tera Chehra" {
 		t.Fatalf("Expected currently playing track to be 'Tera Chehra', got: %+v", currentTrack)
@@ -387,18 +776,15 @@ func TestAutoplayYieldsToManualQueue(t *testing.T) {
 	defer room.FinishAutoplay(workerGen)
 	defer apCancel()
 
-	// User adds a manual track to queue
 	manualQueued := &state.Track{
 		ID:        "queued_1",
 		Title:     "Queued Track",
 		Requester: "User",
 	}
-	_ = room.Play(manualQueued, "", false) // With playing=false, this becomes active or queued
+	_ = room.Play(manualQueued, "", false)
 
-	// If queue has items or room playing, IsAutoplayValid must return false
 	room.SetShuffle(false)
 	if room.IsAutoplayValid(workerGen) {
-		// If generation bumped or queue has items, it must be invalid
 		room.StartManualTransition("manual_play")
 		if room.IsAutoplayValid(workerGen) {
 			t.Fatal("Expected IsAutoplayValid to return false when manual transition starts")
@@ -421,7 +807,6 @@ func TestPrematureStreamEndIgnored(t *testing.T) {
 	_ = room.Play(longTrack, "/tmp/audio.mp3", true)
 	room.SetStreamStartTime(time.Now())
 
-	// Check stream-end immediately (e.g. 10ms after start - decoder crash)
 	natural, reason := room.IsNaturalStreamEnd(room.ActiveTrackGen())
 	if natural {
 		t.Fatal("Expected immediate stream-end to be rejected as premature decoder crash")

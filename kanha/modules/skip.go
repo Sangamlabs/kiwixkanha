@@ -138,9 +138,6 @@ func handleSkip(c *td.Client, m *td.Message, cplay bool) error {
 	}
 
 	if len(r.Queue()) == 0 {
-		if r.Autoplay() {
-			return handleAutoplaySkip(c, m, cplay)
-		}
 		scheduleOldPlayingMessage(r)
 		core.DropRoom(r.ID)
 		_, err := m.ReplyText(c, F(chatID, "skip_stopped", locales.Arg{
@@ -224,6 +221,7 @@ func handleSkip(c *td.Client, m *td.Message, cplay bool) error {
 	}
 
 	r.SetActiveTrackGen(transGen)
+	r.UpdateSessionVibeFromTrack(t)
 
 	statusMsg = sendNowPlaying(c, statusMsg, chatID, r, t)
 	if statusMsg != nil {

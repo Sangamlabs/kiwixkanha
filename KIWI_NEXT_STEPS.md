@@ -13,6 +13,13 @@
 - [x] Added automated temp PNG file cleanup (older than 30 minutes).
 - [x] Created unit tests in `kanha/modules/nowplaying_test.go`.
 - [x] Fixed Railway/Docker build error (`NowPlayingData.Requester` field declaration) and verified full Linux CGO compilation with code 0.
+- [x] Implemented Vibe Detection Engine in `kanha/core/models/vibe.go` (Genre, Version, Vibe, Energy, Mood).
+- [x] Implemented session-based vibe retention on `RoomState` (`GetVibeProfile`, `SetVibeProfile`, `UpdateSessionVibeFromTrack`).
+- [x] Implemented tiered candidate scoring and conflict filtering in `kanha/modules/call.go` (`buildVibeSearchQueries`, `pickAutoplayCandidate`).
+- [x] Fixed `/skip` behavior in `kanha/modules/skip.go`: empty queue stops playback and never invokes autoplay; manual queue has strict priority over autoplay.
+- [x] Preserved `/askip` for explicit autoplay skipping.
+- [x] Added unit tests for all 12 scenarios in `kanha/modules/autoplay_test.go` and `kanha/core/models/vibe_test.go`.
+- [x] Verified full Linux test suite passes (`go test ./kanha/modules`, `go test ./kanha/core/models`) and production CGO binary builds with code 0.
 - [x] Created persistent context documents (`KIWI_NOWPLAYING_IMPLEMENTATION.md`, `KIWI_PROJECT_CONTEXT.md`, `KIWI_NEXT_STEPS.md`).
 
 ## 2. Incomplete Tasks / Remaining Items

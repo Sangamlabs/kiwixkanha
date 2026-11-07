@@ -19,7 +19,6 @@ package modules
 import (
 	"context"
 	"crypto/rand"
-	"fmt"
 	"math/big"
 	"os"
 	"strings"
@@ -395,45 +394,111 @@ func pickAutoplayCandidate(chatID int64, cur *state.Track) *state.Track {
 
 	apMarkPlayed(chatID, cur.ID)
 
-	var candidates []*state.Track
+	room, hasRoom := core.RoomFor(chatID)
+	var profile state.TrackVibeProfile
+	if hasRoom && room.GetVibeProfile() != nil {
+		profile = *room.GetVibeProfile()
+	} else {
+		profile = state.ClassifyTrack(cur.Title)
+		if hasRoom {
+			room.SetVibeProfile(&profile)
+		}
+	}
 
+	cleanTitle := cleanSongTitleForSearch(cur.Title)
+	logger.Infof("[Autoplay] Target vibe profile for chat %d: Genre=%s, Vibe=%s, Version=%s, Energy=%s (seed: %q)",
+		chatID, profile.Genre, profile.Vibe, profile.Version, profile.Energy, cleanTitle)
+
+	queries := buildVibeSearchQueries(profile, cleanTitle)
+
+	// Collect raw candidates from YouTube Mix and targeted search queries
+	var rawCandidates []*state.Track
+	seenIDs := make(map[string]bool)
+
+	// 1. YouTube Mix Playlist
 	mixPlaylistID := cur.ID
 	if !strings.HasPrefix(mixPlaylistID, "RD") {
 		mixPlaylistID = "RD" + cur.ID
 	}
-
 	mix, err := platforms.GetYouTubeMixPlaylist(context.Background(), mixPlaylistID)
 	if err == nil && len(mix) > 0 {
 		for i, t := range mix {
 			if i >= 15 {
 				break
 			}
-			if t.ID != "" && t.ID != cur.ID && !apIsPlayed(chatID, t.ID) && !isTrackFailedRecently(t.ID) {
-				candidates = append(candidates, t)
+			if t.ID != "" && t.ID != cur.ID && !seenIDs[t.ID] {
+				seenIDs[t.ID] = true
+				rawCandidates = append(rawCandidates, t)
 			}
 		}
 	}
 
-	if len(candidates) == 0 {
-		cleanTitle := cleanSongTitleForSearch(cur.Title)
-		logger.Infof("[Autoplay] Radio mix empty for %s, falling back to smart search: %q", cur.Title, cleanTitle)
-		query := fmt.Sprintf("%s similar songs", cleanTitle)
+	// 2. Search targeted queries
+	for _, query := range queries {
+		if len(rawCandidates) >= 20 {
+			break
+		}
 		if searchTracks, sErr := platforms.SearchTracks(query, false); sErr == nil && len(searchTracks) > 0 {
 			for _, t := range searchTracks {
-				if t.ID != "" && t.ID != cur.ID && !apIsPlayed(chatID, t.ID) && !isTrackFailedRecently(t.ID) {
-					candidates = append(candidates, t)
+				if t.ID != "" && t.ID != cur.ID && !seenIDs[t.ID] {
+					seenIDs[t.ID] = true
+					rawCandidates = append(rawCandidates, t)
 				}
 			}
 		}
 	}
 
-	if len(candidates) == 0 {
+	// 3. Filter and Score Candidates
+	var exactMatches []*state.Track
+	var moderateMatches []*state.Track
+	var fallbackMatches []*state.Track
+
+	for _, t := range rawCandidates {
+		// Strict exclusion of played or failed tracks
+		if t.ID == "" || t.ID == cur.ID || apIsPlayed(chatID, t.ID) || isTrackFailedRecently(t.ID) {
+			continue
+		}
+		if hasRoom && room.HasPlayed(t.ID, t.Title) {
+			continue
+		}
+
+		cProfile := state.ClassifyTrack(t.Title)
+		score := profile.ScoreCandidate(cProfile)
+
+		// Exclude conflicting genres / styles
+		if score < 0 {
+			continue
+		}
+
+		if score >= 60 {
+			exactMatches = append(exactMatches, t)
+		} else if score >= 30 {
+			moderateMatches = append(moderateMatches, t)
+		} else {
+			fallbackMatches = append(fallbackMatches, t)
+		}
+	}
+
+	// 4. Select Candidate from Priority Tiers
+	var pool []*state.Track
+	if len(exactMatches) > 0 {
+		pool = exactMatches
+		logger.Infof("[Autoplay] Picked from Exact Vibe Match pool (%d candidates) for chat %d", len(pool), chatID)
+	} else if len(moderateMatches) > 0 {
+		pool = moderateMatches
+		logger.Infof("[Autoplay] Picked from Moderate Vibe Match pool (%d candidates) for chat %d", len(pool), chatID)
+	} else if len(fallbackMatches) > 0 {
+		pool = fallbackMatches
+		logger.Infof("[Autoplay] Picked from Fallback pool (%d candidates) for chat %d", len(pool), chatID)
+	}
+
+	if len(pool) == 0 {
 		logger.Infof("[Autoplay] All candidates exhausted for chat %d, clearing history and stopping autoplay", chatID)
 		apClearChat(chatID)
 		return nil
 	}
 
-	maxPool := len(candidates)
+	maxPool := len(pool)
 	if maxPool > 4 {
 		maxPool = 4
 	}
@@ -441,16 +506,66 @@ func pickAutoplayCandidate(chatID int64, cur *state.Track) *state.Track {
 	n, err := rand.Int(rand.Reader, big.NewInt(int64(maxPool)))
 	var chosen *state.Track
 	if err != nil {
-		chosen = candidates[0]
+		chosen = pool[0]
 	} else {
-		chosen = candidates[n.Int64()]
+		chosen = pool[n.Int64()]
 	}
 
 	apMarkPlayed(chatID, chosen.ID)
+	if hasRoom {
+		room.AddPlayed(chosen)
+	}
 	chosen.Requester = "🎵 ᴀᴜᴛᴏᴘʟᴀʏ"
 	chosen.IsAutoplay = true
-	logger.Infof("[Autoplay] Successfully picked Golden-Zone song: %q (%s) for chat %d", chosen.Title, chosen.ID, chatID)
+	cProf := state.ClassifyTrack(chosen.Title)
+	chosen.VibeProfile = &cProf
+
+	logger.Infof("[Autoplay] Successfully picked vibe song: %q (%s) [Genre=%s, Vibe=%s, Version=%s] for chat %d",
+		chosen.Title, chosen.ID, cProf.Genre, cProf.Vibe, cProf.Version, chatID)
 	return chosen
+}
+
+func buildVibeSearchQueries(profile state.TrackVibeProfile, cleanTitle string) []string {
+	var queries []string
+
+	if profile.Genre == state.GenrePhonk {
+		switch profile.Version {
+		case state.VersionSlowed:
+			queries = append(queries, cleanTitle+" slowed phonk", "slowed phonk drift", "phonk slowed")
+		case state.VersionSlowedReverb:
+			queries = append(queries, cleanTitle+" slowed reverb phonk", "slowed and reverb phonk", "slowed phonk")
+		case state.VersionSpedUp, state.VersionNightcore:
+			queries = append(queries, cleanTitle+" sped up phonk", "sped up phonk", "phonk drift")
+		default:
+			queries = append(queries, cleanTitle+" phonk", "drift phonk", "phonk bass")
+		}
+	} else if profile.Vibe == state.VibeLofi {
+		queries = append(queries, cleanTitle+" lofi", "lofi chill beats", "lofi hip hop relax")
+	} else if profile.Vibe == state.VibeSad {
+		switch profile.Version {
+		case state.VersionSlowed, state.VersionSlowedReverb:
+			queries = append(queries, cleanTitle+" sad slowed", "sad slowed and reverb songs", "sad acoustic slow")
+		default:
+			queries = append(queries, cleanTitle+" sad songs", "sad songs chill", "melancholy acoustic")
+		}
+	} else if profile.Vibe == state.VibeRomantic {
+		queries = append(queries, cleanTitle+" love song", "romantic love songs", "slow romantic acoustic")
+	} else if profile.Vibe == state.VibeChill {
+		queries = append(queries, cleanTitle+" chill", "chill mellow beats", "relaxing chill songs")
+	} else if profile.Vibe == state.VibeDark {
+		queries = append(queries, cleanTitle+" dark", "dark alternative", "dark underground")
+	} else if profile.Genre == state.GenreHipHop {
+		queries = append(queries, cleanTitle+" hip hop", "hip hop rap", "chill rap")
+	} else if profile.Genre == state.GenreEDM {
+		queries = append(queries, cleanTitle+" edm", "dance edm house", "electronic club")
+	} else if profile.Genre == state.GenreIndie {
+		queries = append(queries, cleanTitle+" indie", "indie alternative songs", "indie pop")
+	} else if profile.Genre == state.GenrePop {
+		queries = append(queries, cleanTitle+" pop hits", "pop songs similar")
+	}
+
+	queries = append(queries, cleanTitle+" similar songs", cleanTitle)
+	return queries
 }
 
 func cleanSongTitleForSearch(title string) string {

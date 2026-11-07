@@ -63,4 +63,20 @@ Existing providers (OneGrab, AloneMusic, MeowAPI, Spotify, YouTube) remain untou
 3. **Template Preservation:** Fixed `assets/nowplaying/Neon Kiwi Music Bot Template.png` is preserved without modifying any template artwork or branding.
 4. **Resampling Quality:** High-quality `CatmullRom` scaling was chosen for album artwork and profile photos to avoid nearest-neighbor pixelation on high-res displays.
 5. **Bundled Typography:** Built-in Go TrueType fonts (`Go Bold`, `Go Regular`) are used with an optional override to `assets/nowplaying/fonts/music.ttf`, ensuring zero system font dependencies on minimal Docker/Linux images.
+6. **Vibe Detection & Session-Based Autoplay:**
+   - Tracks are classified into:
+     - Genre: `Phonk`, `Hip-Hop`, `Pop`, `EDM`, `Indie`
+     - Version: `Original`, `Remix`, `Slowed`, `Slowed + Reverb`, `Sped Up`, `Nightcore`, `Instrumental`, `Acoustic`
+     - Vibe: `Lofi`, `Soft`, `Sad`, `Romantic`, `Chill`, `Dark`
+     - Energy: `High`, `Medium`, `Low`
+     - Mood: `Melancholy`, `Energetic`, `Calm`, `Loving`, `Ominous`, `Neutral`
+   - Session Vibe Retention: Room session profile is maintained across autoplay iterations so that e.g. "Slowed Phonk" always continues playing "Slowed Phonk", without genre drift.
+   - Candidate Filtering & Scoring: Positive scores (+45 genre, +35 version, +25 vibe) reward exact matches; negative score (-60) strictly filters out conflicting genres.
+7. **Reliable `/skip` & Queue Priority:**
+   - `/skip` skips the current track and immediately dequeues the next manual queued track.
+   - If the queue is empty, `/skip` stops playback (`core.DropRoom(r.ID)`) and **never** triggers autoplay.
+   - Explicit `/askip` retains on-demand autoplay recommendation skipping.
+   - Natural stream completion checks the manual queue first and only invokes autoplay when the manual queue is empty.
+   - Playback race conditions (stale workers from previous generations or manual `/play`/`/playforce` overrides) are guarded with per-room generation tokens and cancellable contexts.
+
 
