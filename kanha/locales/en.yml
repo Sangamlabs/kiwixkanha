@@ -1040,11 +1040,13 @@ download_progress: |
   <b>єʟᴧᴘsєᴅ:</b> {elapsed}
 stream_play_fail: "{emoji:❌} ғᴧɪʟєᴅ ᴛσ ᴘʟᴧʏ ᴛʜє sσηɢ."
 
-stream_now_playing: |
-  <blockquote><b>{emoji:💮} ᴘʟᴧʏʙᴧᴄᴋ ᴧᴄᴛɪᴠᴧᴛєᴅ. | єηᴊσʏ ᴛʜє ᴍᴜsɪᴄ |</b></blockquote>
-  <blockquote expandable>▫ <b>ᴍєʟσᴅʏ :</b> <a href="{url}">{title}</a>
-  ▫ <b>ʟєηɢᴛʜ :</b> {duration}
-  ▫ <b>ʀєǫᴜєsᴛєʀ :</b> {by}</blockquote>
+stream_now_playing: '<blockquote>✦ <b>ＮＯＷ ＰＬＡＹＩＮＧ</b> ✦\n<i>ᴛᴜɴᴇ ɪɴ · ғᴇᴇʟ ᴛʜᴇ ᴠɪʙᴇ 🎧</i></blockquote>\n<blockquote expandable>🎵 <b>ᴛʀᴀᴄᴋ</b>\n<a href="{url}">{title}</a>\n\n⏱ <b>ᴅᴜʀᴀᴛɪᴏɴ</b> · {duration}\n👤 <b>ʀᴇǫᴜᴇsᴛᴇᴅ ʙʏ</b> · {by}\n\n━━━━━━━━━━━━━━\n🌙 <b>ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋɪᴡɪ ᴍᴜsɪᴄ</b> ✨</blockquote>'
+
+#stream_now_playing: |
+#  <blockquote><b>{emoji:💮} ᴘʟᴧʏʙᴧᴄᴋ ᴧᴄᴛɪᴠᴧᴛєᴅ. | єηᴊσʏ ᴛʜє ᴍᴜsɪᴄ |</b></blockquote>
+#  <blockquote expandable>▫ <b>ᴍєʟσᴅʏ :</b> <a href="{url}">{title}</a>
+#  ▫ <b>ʟєηɢᴛʜ :</b> {duration}
+#  ▫ <b>ʀєǫᴜєsᴛєʀ :</b> {by}</blockquote>
 
 # 👑 Sudo / Owner Join Messages
 sudo_join_owner: "{emoji:👑} {user} — σᴡηєʀ σғ {bot} — ᴊᴜsᴛ єηᴛєʀєᴅ ᴛʜє ᴄʜᴧᴛ."
