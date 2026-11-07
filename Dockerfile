@@ -11,6 +11,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY go.mod go.sum ./
+COPY kanha/meow/go.mod kanha/meow/go.sum* ./kanha/meow/
 RUN go mod download
 
 COPY install.sh ./

@@ -32,7 +32,8 @@
   - Hardened `cmd/app/glibc_compatibility.h` with `__attribute__((weak))` on all resolver functions (`__dn_expand`, `__res_nquery`, `__res_nclose`, `__res_ninit`).
   - Added `-lresolv` to `#cgo linux LDFLAGS` in `cmd/app/main.go`.
   - Replaced `RUN go mod tidy` with `RUN go mod download` in `Dockerfile`.
-  - Verified clean GOCACHE build with exit code 0.
+  - Added `COPY kanha/meow/go.mod kanha/meow/go.sum* ./kanha/meow/` prior to `RUN go mod download` in `Dockerfile` to satisfy the local replace directive (`replace github.com/Kanha/Meow => ./kanha/meow`).
+  - Verified clean GOCACHE build and simulated Docker build with exit code 0.
 - [x] Maintained persistent context documents (`KIWI_PROJECT_CONTEXT.md`, `KIWI_NEXT_STEPS.md`).
 
 ## 2. Incomplete Tasks / Remaining Items

@@ -133,12 +133,16 @@ Existing providers (OneGrab, AloneMusic, MeowAPI, Spotify, YouTube) remain untou
       - `cmd/app/glibc_compatibility.h` was already included by `cmd/app/main.go` and defined global functions `__dn_expand` and `__res_nquery`.
       - When building `cmd/app/`, GCC encountered duplicate definitions across `glibc_compatibility.h` (`000001.o`) and `resolver_compat.c` (`000033.o`), failing the final link step with `multiple definition of '__dn_expand'` and `multiple definition of '__res_nquery'`.
       - Furthermore, `glibc_compatibility.h` defined symbols as strong global functions, so any secondary definition or glibc conflict on other Linux distributions could cause linker collision.
-      - In `Dockerfile`, `RUN go mod tidy` was positioned before `COPY . .`, which stripped dependencies from `go.mod` in the initial layer.
     - **Resolution:**
       - Confirmed absence of `ntgcalls/resolver_compat.c`.
       - Hardened `cmd/app/glibc_compatibility.h` with `__attribute__((weak))` on all resolver functions (`__dn_expand`, `__res_nquery`, `__res_nclose`, `__res_ninit`), guaranteeing that GCC and GNU ld will never fail with multiple definition errors regardless of distribution or library symbols.
       - Added `-lresolv` to `#cgo linux LDFLAGS` in `cmd/app/main.go` to ensure standard resolver symbols resolve cleanly across Debian/Ubuntu/Alpine libc environments.
-      - Fixed `Dockerfile` layer caching by replacing `RUN go mod tidy` with `RUN go mod download` between `COPY go.mod go.sum ./` and `COPY . .`.
-      - Formatted Go code with `gofmt`.
-      - Verified full suite of unit tests pass (`KanhaMusic/kanha/core/models`).
-      - Verified production Linux Docker builder command (`./install.sh -n -t --quiet --skip-summary && CGO_ENABLED=1 go build -v -trimpath -ldflags="-w -s" -o app ./cmd/app/`) succeeds with exit code 0, generating the 80MB stripped ELF binary `app`.
+
+11. **Local Module Replace (`kanha/meow`) in Docker Build:**
+    - **Root Cause of `open /build/kanha/meow/go.mod: no such file or directory`:**
+      - Root `go.mod` specifies `replace github.com/Kanha/Meow => ./kanha/meow`.
+      - In `Dockerfile`, `RUN go mod download` was executed immediately after `COPY go.mod go.sum ./`.
+      - When Go evaluated `go mod download`, it attempted to resolve the local replacement module at `./kanha/meow/go.mod`, which had not been copied into `/build` yet.
+    - **Resolution:**
+      - Added `COPY kanha/meow/go.mod kanha/meow/go.sum* ./kanha/meow/` before `RUN go mod download` in `Dockerfile`.
+      - Verified local simulated multi-stage Docker build succeeds end-to-end through `CGO_ENABLED=1 go build` with exit code 0, generating the 80MB stripped ELF binary `app`.
