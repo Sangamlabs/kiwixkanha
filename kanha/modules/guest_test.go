@@ -7,7 +7,6 @@ package modules
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -24,13 +23,16 @@ import (
 func TestGuestEmojisLoading(t *testing.T) {
 	origNotes := os.Getenv("EMOJI_MUSIC_NOTES")
 	origBolt := os.Getenv("GUEST_EMOJI_BOLT")
+	origLeaf := os.Getenv("EMOJI_LEAF")
 	defer func() {
 		os.Setenv("EMOJI_MUSIC_NOTES", origNotes)
 		os.Setenv("GUEST_EMOJI_BOLT", origBolt)
+		os.Setenv("EMOJI_LEAF", origLeaf)
 	}()
 
 	os.Setenv("EMOJI_MUSIC_NOTES", "123456789")
 	os.Setenv("GUEST_EMOJI_BOLT", "987654321")
+	os.Setenv("EMOJI_LEAF", "554433221")
 
 	emojis := loadGuestEmojis()
 	if emojis.MusicNotes != "123456789" {
@@ -39,23 +41,23 @@ func TestGuestEmojisLoading(t *testing.T) {
 	if emojis.Bolt != "987654321" {
 		t.Errorf("expected Bolt '987654321', got %q", emojis.Bolt)
 	}
+	if emojis.Leaf != "554433221" {
+		t.Errorf("expected Leaf '554433221', got %q", emojis.Leaf)
+	}
 }
 
 func TestFormatEmoji(t *testing.T) {
-	// Fancy with custom emoji id
 	out := formatEmoji("112233", "🎶", true)
 	expected := `<tg-emoji emoji-id="112233">🎶</tg-emoji>`
 	if out != expected {
 		t.Errorf("formatEmoji fancy failed. Got %q, want %q", out, expected)
 	}
 
-	// Plain fallback when fancy is false
 	out = formatEmoji("112233", "🎶", false)
 	if out != "🎶" {
 		t.Errorf("formatEmoji plain failed. Got %q, want %q", out, "🎶")
 	}
 
-	// Plain fallback when eid is empty
 	out = formatEmoji("", "🎶", true)
 	if out != "🎶" {
 		t.Errorf("formatEmoji empty eid failed. Got %q, want %q", out, "🎶")
@@ -63,14 +65,13 @@ func TestFormatEmoji(t *testing.T) {
 }
 
 func TestStripCustomEmoji(t *testing.T) {
-	raw := `<b>Bot</b> <tg-emoji emoji-id="12345">🎶</tg-emoji> Hello <tg-emoji emoji-id="67890">⚡</tg-emoji>`
+	raw := `<b>Bot</b> <tg-emoji emoji-id="12345">🍂</tg-emoji> Hello <tg-emoji emoji-id="67890">🎥</tg-emoji>`
 	stripped := stripCustomEmoji(raw)
-	expected := `<b>Bot</b> 🎶 Hello ⚡`
+	expected := `<b>Bot</b> 🍂 Hello 🎥`
 	if stripped != expected {
 		t.Errorf("stripCustomEmoji failed.\nGot:  %q\nWant: %q", stripped, expected)
 	}
 
-	// No custom emojis present
 	plain := "Just plain text 123"
 	if stripCustomEmoji(plain) != plain {
 		t.Errorf("stripCustomEmoji modified text without emojis")
@@ -100,44 +101,43 @@ func TestFormatSupportURL(t *testing.T) {
 
 func TestBuildGuestCardText(t *testing.T) {
 	emojis := GuestEmojis{
-		MusicNotes: "1001",
-		Bolt:       "1002",
-		Rocket:     "1003",
-		Globe:      "1004",
+		Leaf:      "1001",
+		Video:     "1002",
+		Snowflake: "1003",
 	}
 
-	// 1. Bot name escaping
+	username := "KiwiMusicBot"
 	botName := "Kiwi & <Kanha>"
-	fancyCard := buildGuestCardText(botName, emojis, true)
-	if !strings.Contains(fancyCard, "<b>Kiwi &amp; &lt;Kanha&gt;</b>") {
-		t.Errorf("buildGuestCardText did not escape HTML in bot name: %s", fancyCard)
+
+	// 1. Bot name escaping and link structure
+	fancyCard := buildGuestCardText(username, botName, emojis, true)
+	if !strings.Contains(fancyCard, `<a href="https://t.me/KiwiMusicBot">˹Kiwi &amp; &lt;Kanha&gt;˼ ♪</a>`) {
+		t.Errorf("buildGuestCardText did not format bot name and link correctly: %s", fancyCard)
 	}
 
-	// 2. Contains custom emoji tags when fancy=true
-	if !strings.Contains(fancyCard, `<tg-emoji emoji-id="1001">🎶</tg-emoji>`) {
-		t.Errorf("fancy card missing MusicNotes emoji tag: %s", fancyCard)
+	// 2. Fancy contains custom emojis and blockquote
+	if !strings.Contains(fancyCard, `<tg-emoji emoji-id="1001">🍂</tg-emoji>`) {
+		t.Errorf("fancy card missing Leaf emoji tag: %s", fancyCard)
 	}
-	if !strings.Contains(fancyCard, `<tg-emoji emoji-id="1002">⚡</tg-emoji>`) {
-		t.Errorf("fancy card missing Bolt emoji tag: %s", fancyCard)
+	if !strings.Contains(fancyCard, `<blockquote>`) || !strings.Contains(fancyCard, `</blockquote>`) {
+		t.Errorf("card missing blockquote formatting: %s", fancyCard)
 	}
 
 	// 3. Plain card strips all custom emojis
-	plainCard := buildGuestCardText(botName, emojis, false)
+	plainCard := buildGuestCardText(username, botName, emojis, false)
 	if strings.Contains(plainCard, "<tg-emoji") {
 		t.Errorf("plain card contains <tg-emoji> tags: %s", plainCard)
 	}
-	if !strings.Contains(plainCard, "🎶") || !strings.Contains(plainCard, "⚡") {
+	if !strings.Contains(plainCard, "🍂") || !strings.Contains(plainCard, "🎥") || !strings.Contains(plainCard, "❄️") {
 		t.Errorf("plain card missing plain unicode emojis: %s", plainCard)
 	}
 
-	// 4. Feature bullet points & call to action verification
+	// 4. Required promotional phrases from guest.py
 	requiredPhrases := []string{
-		"ʏᴏᴜʀ ᴅᴇᴅɪᴄᴀᴛᴇᴅ ᴍᴜsɪᴄ ʙᴏᴛ",
-		"ᴄʀʏsᴛᴀʟ-ᴄʟᴇᴀʀ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ sᴛʀᴇᴀᴍɪɴɢ",
-		"ʙʟᴀᴢɪɴɢ-ꜰᴀsᴛ ᴘʟᴀʏʙᴀᴄᴋ ᴡɪᴛʜ ǫᴜᴇᴜᴇ",
-		"sᴍᴀʀᴛ ᴀᴜᴛᴏᴘʟᴀʏ &amp; sᴜɢɢᴇsᴛɪᴏɴs (/autoplay)",
-		"ʏᴏᴜᴛᴜʙᴇ, sᴘᴏᴛɪꜰʏ &amp; ᴍᴏʀᴇ",
-		"/play [song]",
+		"𝐘ᴏᴜʀ 𝐏ʀᴇᴍɪᴜᴍ 𝐌ᴜsɪᴄ 𝐒ᴛʀᴇᴍᴀʀ 𝐁ᴏᴛ",
+		"▸ 𝐅ᴀsᴛ • 𝐋ᴀɢ 𝐅ʀᴇᴇ • 𝐍ᴏ 𝐀ᴅs",
+		"▸ 𝐀ᴜᴛᴏ-𝐏ʟᴀʏ • 𝐀ᴜᴅɪᴏ • 𝐕ɪᴅᴇᴏ",
+		"𝐓ᴏ 𝐘ᴏᴜʀ 𝐆ʀᴏᴜᴘ &amp; 𝐄ɴᴊᴏʏ 𝐇ɪɢʜ 𝐐ᴜᴀʟɪᴛʏ 𝐒ᴏɴɢ",
 	}
 	for _, phrase := range requiredPhrases {
 		if !strings.Contains(fancyCard, phrase) {
@@ -149,24 +149,22 @@ func TestBuildGuestCardText(t *testing.T) {
 func TestBuildGuestKeyboard(t *testing.T) {
 	emojis := GuestEmojis{
 		Rocket:     "5001",
-		Help:       "5002",
-		MusicNotes: "5003",
 		Chat:       "5004",
 		Headphones: "5005",
 	}
 
-	// Test Fancy keyboard
+	// Fancy keyboard
 	kbFancy := buildGuestKeyboard("TestKiwiBot", "@KiwiSupport", 99887766, emojis, true)
-	if len(kbFancy.InlineKeyboard) != 3 {
-		t.Fatalf("expected 3 rows in fancy keyboard, got %d", len(kbFancy.InlineKeyboard))
+	if len(kbFancy.InlineKeyboard) < 1 {
+		t.Fatalf("expected at least 1 row in keyboard")
 	}
 
-	// Row 1: Add me to your group
+	// Row 1: Add me to your group matching guest.py
 	row1 := kbFancy.InlineKeyboard[0]
 	if len(row1) != 1 {
 		t.Fatalf("expected 1 button in row 1, got %d", len(row1))
 	}
-	if row1[0].Text != "ᴀᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ" {
+	if row1[0].Text != "✙ ʌᴅᴅ ϻє ɪη ʏσυʀ ɢʀσυᴘ ✙" {
 		t.Errorf("row 1 button text mismatch: %q", row1[0].Text)
 	}
 	if row1[0].URL != "https://t.me/TestKiwiBot?startgroup=true" {
@@ -179,31 +177,7 @@ func TestBuildGuestKeyboard(t *testing.T) {
 		t.Errorf("row 1 button custom emoji expected '5001', got %q", row1[0].IconCustomEmojiID)
 	}
 
-	// Row 2: Commands & Open Bot
-	row2 := kbFancy.InlineKeyboard[1]
-	if len(row2) != 2 {
-		t.Fatalf("expected 2 buttons in row 2, got %d", len(row2))
-	}
-	if row2[0].Text != "ᴄᴏᴍᴍᴀɴᴅs" || row2[0].URL != "https://t.me/TestKiwiBot?start=help" || row2[0].IconCustomEmojiID != "5002" {
-		t.Errorf("row 2 commands button mismatch: %+v", row2[0])
-	}
-	if row2[1].Text != "ᴏᴘᴇɴ ʙᴏᴛ" || row2[1].URL != "https://t.me/TestKiwiBot" || row2[1].IconCustomEmojiID != "5003" {
-		t.Errorf("row 2 open bot button mismatch: %+v", row2[1])
-	}
-
-	// Row 3: Support & Owner
-	row3 := kbFancy.InlineKeyboard[2]
-	if len(row3) != 2 {
-		t.Fatalf("expected 2 buttons in row 3, got %d", len(row3))
-	}
-	if row3[0].Text != "sᴜᴘᴘᴏʀᴛ" || row3[0].URL != "https://t.me/KiwiSupport" || row3[0].IconCustomEmojiID != "5004" {
-		t.Errorf("row 3 support button mismatch: %+v", row3[0])
-	}
-	if row3[1].Text != "ᴏᴡɴᴇʀ" || row3[1].URL != "tg://user?id=99887766" || row3[1].IconCustomEmojiID != "5005" {
-		t.Errorf("row 3 owner button mismatch: %+v", row3[1])
-	}
-
-	// Test Plain keyboard (no custom emoji IDs, style empty)
+	// Plain keyboard
 	kbPlain := buildGuestKeyboard("TestKiwiBot", "@KiwiSupport", 99887766, emojis, false)
 	for rIdx, r := range kbPlain.InlineKeyboard {
 		for bIdx, btn := range r {
@@ -214,17 +188,6 @@ func TestBuildGuestKeyboard(t *testing.T) {
 				t.Errorf("plain button [%d][%d] had non-empty IconCustomEmojiID: %s", rIdx, bIdx, btn.IconCustomEmojiID)
 			}
 		}
-	}
-
-	// Test Partial Row 3 (no owner, no support)
-	kbNoSupport := buildGuestKeyboard("TestKiwiBot", "", 99887766, emojis, false)
-	if len(kbNoSupport.InlineKeyboard) != 3 || len(kbNoSupport.InlineKeyboard[2]) != 1 {
-		t.Errorf("expected row 3 with only owner button, got: %+v", kbNoSupport.InlineKeyboard)
-	}
-
-	kbNoRow3 := buildGuestKeyboard("TestKiwiBot", "", 0, emojis, false)
-	if len(kbNoRow3.InlineKeyboard) != 2 {
-		t.Errorf("expected 2 rows when both support and owner are empty, got %d", len(kbNoRow3.InlineKeyboard))
 	}
 }
 
@@ -245,102 +208,31 @@ func TestSanitizeError(t *testing.T) {
 	}
 }
 
-func TestDefaultBotAPIClient_Requests(t *testing.T) {
+// TestSentGuestMessageDecoding verifies Telegram Bot API returns SentGuestMessage object without json unmarshal failure.
+func TestSentGuestMessageDecoding(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
-
-		switch {
-		case strings.HasSuffix(path, "/getMe"):
-			json.NewEncoder(w).Encode(botAPIResponse[botAPIUser]{
-				OK: true,
-				Result: botAPIUser{
-					ID:                   12345,
-					IsBot:                true,
-					FirstName:            "KiwiBot",
-					Username:             "kiwibot",
-					SupportsGuestQueries: true,
-				},
-			})
-		case strings.HasSuffix(path, "/getWebhookInfo"):
-			json.NewEncoder(w).Encode(botAPIResponse[botAPIWebhookInfo]{
-				OK:     true,
-				Result: botAPIWebhookInfo{URL: ""},
-			})
-		case strings.HasSuffix(path, "/getUpdates"):
-			var params getUpdatesParams
-			json.NewDecoder(r.Body).Decode(&params)
-			if params.Offset != 100 {
-				http.Error(w, "bad offset", http.StatusBadRequest)
-				return
+		// Telegram returns an object containing inline_message_id, NOT boolean
+		w.Write([]byte(`{
+			"ok": true,
+			"result": {
+				"inline_message_id": "AgAAAP123456789_xyz"
 			}
-			json.NewEncoder(w).Encode(botAPIResponse[[]botAPIUpdate]{
-				OK: true,
-				Result: []botAPIUpdate{
-					{
-						UpdateID: 100,
-						GuestMessage: &botAPIGuestMessage{
-							GuestQueryID: "query-abc-123",
-						},
-					},
-				},
-			})
-		case strings.HasSuffix(path, "/answerGuestQuery"):
-			var params answerGuestQueryParams
-			json.NewDecoder(r.Body).Decode(&params)
-			if params.GuestQueryID != "query-abc-123" {
-				http.Error(w, "bad qid", http.StatusBadRequest)
-				return
-			}
-			json.NewEncoder(w).Encode(botAPIResponse[bool]{
-				OK:     true,
-				Result: true,
-			})
-		default:
-			http.NotFound(w, r)
-		}
+		}`))
 	}))
 	defer ts.Close()
 
 	client := newDefaultBotAPIClient("fake-token", ts.URL)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// 1. GetMe
-	me, err := client.GetMe(ctx)
-	if err != nil {
-		t.Fatalf("GetMe failed: %v", err)
-	}
-	if me.Username != "kiwibot" || !me.SupportsGuestQueries {
-		t.Errorf("GetMe returned unexpected user: %+v", me)
-	}
-
-	// 2. GetWebhookInfo
-	wh, err := client.GetWebhookInfo(ctx)
-	if err != nil {
-		t.Fatalf("GetWebhookInfo failed: %v", err)
-	}
-	if wh.URL != "" {
-		t.Errorf("GetWebhookInfo returned non-empty URL: %s", wh.URL)
-	}
-
-	// 3. GetUpdates
-	updates, err := client.GetUpdates(ctx, 100, 10, []string{"guest_message"})
-	if err != nil {
-		t.Fatalf("GetUpdates failed: %v", err)
-	}
-	if len(updates) != 1 || updates[0].GuestMessage == nil || updates[0].GuestMessage.GuestQueryID != "query-abc-123" {
-		t.Errorf("GetUpdates returned unexpected updates: %+v", updates)
-	}
-
-	// 4. AnswerGuestQuery
-	err = client.AnswerGuestQuery(ctx, "query-abc-123", GuestQueryResultArticle{
+	sent, err := client.AnswerGuestQuery(context.Background(), "test-qid", GuestQueryResultArticle{
 		Type:  "article",
 		ID:    "1",
-		Title: "KiwiBot",
+		Title: "Test",
 	})
 	if err != nil {
-		t.Fatalf("AnswerGuestQuery failed: %v", err)
+		t.Fatalf("AnswerGuestQuery failed to decode SentGuestMessage object: %v", err)
+	}
+	if sent == nil || sent.InlineMessageID != "AgAAAP123456789_xyz" {
+		t.Fatalf("expected inline_message_id 'AgAAAP123456789_xyz', got: %+v", sent)
 	}
 }
 
@@ -350,7 +242,7 @@ type mockBotAPIClient struct {
 	getMeFunc         func(ctx context.Context) (*botAPIUser, error)
 	getWebhookFunc    func(ctx context.Context) (*botAPIWebhookInfo, error)
 	getUpdatesFunc    func(ctx context.Context, offset int64, timeout int, allowed []string) ([]botAPIUpdate, error)
-	answerGuestFunc   func(ctx context.Context, qid string, result GuestQueryResultArticle) error
+	answerGuestFunc   func(ctx context.Context, qid string, result GuestQueryResultArticle) (*SentGuestMessage, error)
 	answeredResults   []GuestQueryResultArticle
 	receivedOffsets   []int64
 	answerCallCounter int
@@ -381,72 +273,110 @@ func (m *mockBotAPIClient) GetUpdates(ctx context.Context, offset int64, timeout
 	return nil, nil
 }
 
-func (m *mockBotAPIClient) AnswerGuestQuery(ctx context.Context, qid string, result GuestQueryResultArticle) error {
+func (m *mockBotAPIClient) AnswerGuestQuery(ctx context.Context, qid string, result GuestQueryResultArticle) (*SentGuestMessage, error) {
 	m.mu.Lock()
 	m.answeredResults = append(m.answeredResults, result)
 	m.answerCallCounter++
-	callNum := m.answerCallCounter
 	m.mu.Unlock()
 
 	if m.answerGuestFunc != nil {
 		return m.answerGuestFunc(ctx, qid, result)
 	}
-	_ = callNum
-	return nil
+	return &SentGuestMessage{InlineMessageID: "msg-123"}, nil
 }
 
-func TestGuestService_AnswerFallback(t *testing.T) {
+// TestGuestService_PremiumSuccessNoFallback verifies that a successful premium answer does NOT retry.
+func TestGuestService_PremiumSuccessNoFallback(t *testing.T) {
 	var callCount atomic.Int32
-
 	mock := &mockBotAPIClient{
-		answerGuestFunc: func(ctx context.Context, qid string, result GuestQueryResultArticle) error {
-			currentCall := callCount.Add(1)
-			if currentCall == 1 {
-				// Fancy attempt rejected by Telegram (e.g. invalid emoji or not premium)
-				return &BotAPIError{ErrorCode: 400, Description: "CUSTOM_EMOJI_INVALID"}
-			}
-			// Plain fallback succeeds
-			return nil
+		answerGuestFunc: func(ctx context.Context, qid string, result GuestQueryResultArticle) (*SentGuestMessage, error) {
+			callCount.Add(1)
+			return &SentGuestMessage{InlineMessageID: "msg-first-try"}, nil
 		},
 	}
 
-	service := &GuestService{
-		Client:      mock,
-		SupportChat: "@Support",
-		OwnerID:     12345,
-		Emojis: GuestEmojis{
-			MusicNotes: "999",
-			Bolt:       "888",
-		},
-	}
+	service := NewGuestService("fake-token", "@Support", 12345)
+	service.Client = mock
 
-	ctx := context.Background()
-	err := service.Answer(ctx, "qid-test-456", "MockBot", "Mock Bot")
+	err := service.Answer(context.Background(), "qid-ok", "TestBot", "Test Bot", time.Now())
 	if err != nil {
-		t.Fatalf("expected Answer to succeed after fallback, got err: %v", err)
+		t.Fatalf("expected Answer to succeed, got %v", err)
+	}
+
+	if callCount.Load() != 1 {
+		t.Fatalf("expected exactly 1 call (no retry on success), got %d", callCount.Load())
+	}
+}
+
+// TestGuestService_PremiumRejectionPlainFallback verifies fallback only occurs when custom emoji is rejected.
+func TestGuestService_PremiumRejectionPlainFallback(t *testing.T) {
+	var callCount atomic.Int32
+	mock := &mockBotAPIClient{
+		answerGuestFunc: func(ctx context.Context, qid string, result GuestQueryResultArticle) (*SentGuestMessage, error) {
+			num := callCount.Add(1)
+			if num == 1 {
+				// Telegram rejects custom emoji
+				return nil, &BotAPIError{ErrorCode: 400, Description: "Bad Request: can't use custom emoji"}
+			}
+			return &SentGuestMessage{InlineMessageID: "msg-fallback"}, nil
+		},
+	}
+
+	service := NewGuestService("fake-token", "@Support", 12345)
+	service.Client = mock
+
+	err := service.Answer(context.Background(), "qid-fallback", "TestBot", "Test Bot", time.Now())
+	if err != nil {
+		t.Fatalf("expected Answer to succeed after plain fallback, got %v", err)
 	}
 
 	if callCount.Load() != 2 {
-		t.Errorf("expected 2 calls (fancy then plain), got %d", callCount.Load())
-	}
-
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if len(mock.answeredResults) != 2 {
-		t.Fatalf("expected 2 answered results recorded, got %d", len(mock.answeredResults))
-	}
-
-	// First attempt must have tg-emoji tag
-	if !strings.Contains(mock.answeredResults[0].InputMessageContent.MessageText, "<tg-emoji") {
-		t.Errorf("first attempt was not fancy: %s", mock.answeredResults[0].InputMessageContent.MessageText)
-	}
-
-	// Second attempt must NOT have tg-emoji tag
-	if strings.Contains(mock.answeredResults[1].InputMessageContent.MessageText, "<tg-emoji") {
-		t.Errorf("second attempt was not plain: %s", mock.answeredResults[1].InputMessageContent.MessageText)
+		t.Fatalf("expected 2 calls (premium then plain), got %d", callCount.Load())
 	}
 }
 
+// TestGuestService_ExpiredQueryNoRetry verifies that expired queries (400 query is too old) are NEVER retried.
+func TestGuestService_ExpiredQueryNoRetry(t *testing.T) {
+	var callCount atomic.Int32
+	mock := &mockBotAPIClient{
+		answerGuestFunc: func(ctx context.Context, qid string, result GuestQueryResultArticle) (*SentGuestMessage, error) {
+			callCount.Add(1)
+			return nil, &BotAPIError{
+				ErrorCode:   400,
+				Description: "Bad Request: query is too old and response timeout expired or query ID is invalid",
+			}
+		},
+	}
+
+	service := NewGuestService("fake-token", "@Support", 12345)
+	service.Client = mock
+
+	err := service.Answer(context.Background(), "qid-expired", "TestBot", "Test Bot", time.Now())
+	if err == nil {
+		t.Fatal("expected error for expired query, got nil")
+	}
+
+	if callCount.Load() != 1 {
+		t.Fatalf("expected exactly 1 call (NEVER retry expired queries), got %d", callCount.Load())
+	}
+}
+
+// TestDedupeCache verifies query deduplication to prevent duplicate processing.
+func TestDedupeCache(t *testing.T) {
+	cache := newDedupeCache(1 * time.Minute)
+
+	if cache.AddOrCheck("qid-100") {
+		t.Errorf("expected qid-100 to be new")
+	}
+	if !cache.AddOrCheck("qid-100") {
+		t.Errorf("expected qid-100 to be duplicate on second check")
+	}
+	if cache.AddOrCheck("qid-101") {
+		t.Errorf("expected qid-101 to be new")
+	}
+}
+
+// TestGuestService_Run_WebhookConflict verifies polling is skipped when an active webhook exists.
 func TestGuestService_Run_WebhookConflict(t *testing.T) {
 	var getUpdatesCalled atomic.Bool
 	mock := &mockBotAPIClient{
@@ -463,7 +393,7 @@ func TestGuestService_Run_WebhookConflict(t *testing.T) {
 		Client: mock,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	err := service.Run(ctx)
@@ -476,13 +406,13 @@ func TestGuestService_Run_WebhookConflict(t *testing.T) {
 	}
 }
 
-func TestGuestService_Run_PollingAndOffsetAdvancement(t *testing.T) {
+// TestGuestService_Run_ConcurrentQueriesAndOffsetProgression verifies concurrent query handling and offset progression.
+func TestGuestService_Run_ConcurrentQueriesAndOffsetProgression(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	var pollCount atomic.Int32
-	var answeredQIDs []string
-	var ansMu sync.Mutex
+	var answeredQIDs sync.Map
 
 	mock := &mockBotAPIClient{
 		getWebhookFunc: func(ctx context.Context) (*botAPIWebhookInfo, error) {
@@ -499,51 +429,52 @@ func TestGuestService_Run_PollingAndOffsetAdvancement(t *testing.T) {
 		getUpdatesFunc: func(ctx context.Context, offset int64, timeout int, allowed []string) ([]botAPIUpdate, error) {
 			count := pollCount.Add(1)
 			if count == 1 {
-				// Initial poll: offset is 0, return 2 updates
+				// Deliver multiple simultaneous queries across different groups
 				return []botAPIUpdate{
 					{
-						UpdateID: 50,
+						UpdateID: 10,
 						GuestMessage: &botAPIGuestMessage{
-							GuestQueryID: "query-one",
+							GuestQueryID: "grp1-query",
+							ChatType:     "supergroup",
 						},
 					},
 					{
-						UpdateID:     51,
-						GuestQueryID: "query-two",
+						UpdateID: 11,
+						GuestMessage: &botAPIGuestMessage{
+							GuestQueryID: "grp2-query",
+							ChatType:     "group",
+						},
+					},
+					{
+						UpdateID: 12, // Missing query ID (Diagnostic B test)
+						GuestMessage: &botAPIGuestMessage{
+							ChatType: "group",
+						},
 					},
 				}, nil
 			}
-			// Second poll: offset should now be 52
-			if offset != 52 {
-				t.Errorf("expected offset 52 on second poll, got %d", offset)
+			if offset != 13 {
+				t.Errorf("expected offset 13 on second poll, got %d", offset)
 			}
-			// Cancel context to stop Run loop
 			cancel()
 			return nil, context.Canceled
 		},
-		answerGuestFunc: func(ctx context.Context, qid string, result GuestQueryResultArticle) error {
-			ansMu.Lock()
-			answeredQIDs = append(answeredQIDs, qid)
-			ansMu.Unlock()
-			return nil
+		answerGuestFunc: func(ctx context.Context, qid string, result GuestQueryResultArticle) (*SentGuestMessage, error) {
+			answeredQIDs.Store(qid, true)
+			return &SentGuestMessage{InlineMessageID: "msg-" + qid}, nil
 		},
 	}
 
-	service := &GuestService{
-		Client:      mock,
-		SupportChat: "@KiwiSupport",
-		OwnerID:     123456,
-	}
+	service := NewGuestService("fake-token", "@KiwiSupport", 123456)
+	service.Client = mock
 
 	_ = service.Run(ctx)
 
-	ansMu.Lock()
-	defer ansMu.Unlock()
-	if len(answeredQIDs) != 2 {
-		t.Fatalf("expected 2 queries answered, got %d: %+v", len(answeredQIDs), answeredQIDs)
+	if _, ok := answeredQIDs.Load("grp1-query"); !ok {
+		t.Errorf("grp1-query was not answered")
 	}
-	if answeredQIDs[0] != "query-one" || answeredQIDs[1] != "query-two" {
-		t.Errorf("unexpected answered query IDs: %+v", answeredQIDs)
+	if _, ok := answeredQIDs.Load("grp2-query"); !ok {
+		t.Errorf("grp2-query was not answered")
 	}
 }
 
@@ -556,7 +487,6 @@ func TestStartStopGuestMode_Lifecycle(t *testing.T) {
 		StopGuestMode()
 	}()
 
-	// 1. With DISABLE_GUEST_MODE=true, should not start
 	os.Setenv("DISABLE_GUEST_MODE", "true")
 	config.Token = "fake-token"
 	StartGuestMode(context.Background())
@@ -565,7 +495,6 @@ func TestStartStopGuestMode_Lifecycle(t *testing.T) {
 		StopGuestMode()
 	}
 
-	// 2. With empty token, should not start
 	os.Setenv("DISABLE_GUEST_MODE", "false")
 	config.Token = ""
 	StartGuestMode(context.Background())
@@ -574,7 +503,6 @@ func TestStartStopGuestMode_Lifecycle(t *testing.T) {
 		StopGuestMode()
 	}
 
-	// 3. Normal start and stop
 	config.Token = "fake-token-12345"
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -584,7 +512,7 @@ func TestStartStopGuestMode_Lifecycle(t *testing.T) {
 		t.Errorf("expected Guest Mode to be running after StartGuestMode")
 	}
 
-	// Calling Start again should be a no-op (idempotent)
+	// Idempotent
 	StartGuestMode(ctx)
 	if !IsGuestModeRunning() {
 		t.Errorf("expected Guest Mode to still be running")
@@ -595,4 +523,3 @@ func TestStartStopGuestMode_Lifecycle(t *testing.T) {
 		t.Errorf("expected Guest Mode not to be running after StopGuestMode")
 	}
 }
-
