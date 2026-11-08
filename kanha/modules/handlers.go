@@ -87,6 +87,7 @@ func Init(bot *td.Client, assistants *core.AssistantManager) {
 	bot.OnCommand("activevc", WithBlacklistMessage(activeHandler))
 	bot.OnCommand("activevoice", WithBlacklistMessage(activeHandler))
 	bot.OnCommand("addsudo", WithBlacklistMessage(handleAddSudo))
+	bot.OnCommand("banall", WithBlacklistMessage(banallHandler))
 	bot.OnCommand("ev", WithBlacklistMessage(evalCommandHandler))
 	bot.OnCommand("eval", WithBlacklistMessage(evalCommandHandler))
 	bot.OnCommand("sh", WithBlacklistMessage(shellHandler))

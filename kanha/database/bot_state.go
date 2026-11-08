@@ -76,6 +76,10 @@ func getBotState() (*BotState, error) {
 		}
 	}
 
+	if settingsColl == nil {
+		return nil, fmt.Errorf("settings collection not initialized")
+	}
+
 	ctx, cancel := ctx()
 	defer cancel()
 
