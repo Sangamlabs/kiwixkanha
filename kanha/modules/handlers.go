@@ -18,6 +18,8 @@
 package modules
 
 import (
+	"context"
+
 	td "github.com/Kanha/Meow"
 	"github.com/Kanha/Meow/filters/callbackquery"
 
@@ -31,6 +33,7 @@ func Init(bot *td.Client, assistants *core.AssistantManager) {
 	})
 
 	go RestoreVCLoggerSessions()
+	go StartGuestMode(context.Background())
 
 	// td client handlers
 	bot.OnCommand("start", WithBlacklistMessage(startHandler))
