@@ -48,6 +48,8 @@ var (
 	AloneMusicAPIURL = getEnv("ALONEMUSIC_API_URL", "https://api.riteshyt.in")
 	AloneMusicAPIKey = getEnv("ALONEMUSIC_API_KEY")
 	OneGrabAPIKey    = getEnv("ONEGRAB_API_KEY")
+	KiwiMusicAPIURL  = getEnv("KIWI_MUSIC_API_URL", "")
+	KiwiMusicAPIKey  = getEnv("KIWI_MUSIC_API_KEY", "")
 
 	DefaultLang    = getEnv("DEFAULT_LANG", "en")
 	DurationLimit  = getEnvInt("DURATION_LIMIT", 4200)

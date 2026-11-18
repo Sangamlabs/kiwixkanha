@@ -60,9 +60,30 @@ func Register(p state.Platform) {
 	defer global.mu.Unlock()
 
 	global.byName[p.Name()] = p
-	global.sorted = append(global.sorted, p)
-	sort.Slice(global.sorted, func(i, j int) bool {
-		return global.sorted[i].Priority() > global.sorted[j].Priority()
+	found := false
+	for i, existing := range global.sorted {
+		if existing.Name() == p.Name() {
+			global.sorted[i] = p
+			found = true
+			break
+		}
+	}
+	if !found {
+		global.sorted = append(global.sorted, p)
+	}
+	sort.SliceStable(global.sorted, func(i, j int) bool {
+		if global.sorted[i].Priority() != global.sorted[j].Priority() {
+			return global.sorted[i].Priority() > global.sorted[j].Priority()
+		}
+		// Deterministic tie-breaker between providers with equal priority:
+		// Ensure AloneMusic is always attempted before OneGrab.
+		if global.sorted[i].Name() == PlatformAloneMusic && global.sorted[j].Name() == PlatformOneGrab {
+			return true
+		}
+		if global.sorted[i].Name() == PlatformOneGrab && global.sorted[j].Name() == PlatformAloneMusic {
+			return false
+		}
+		return global.sorted[i].Name() < global.sorted[j].Name()
 	})
 }
 
