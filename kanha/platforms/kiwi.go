@@ -63,7 +63,7 @@ func (k *KiwiMusicPlatform) Name() state.PlatformName {
 }
 
 func (k *KiwiMusicPlatform) Priority() int {
-	return 100
+	return 95
 }
 
 func (k *KiwiMusicPlatform) CanGet(query string) bool {

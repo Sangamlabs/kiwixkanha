@@ -94,10 +94,10 @@ func (o *OneGrabPlatform) Name() state.PlatformName {
 }
 
 func (o *OneGrabPlatform) Priority() int {
-	// AloneMusic: 100
-	// OneGrab:    95
-	// Meow:       85
-	return 95
+	// Yuki:       100
+	// Kiwi:       95
+	// Others:     50
+	return 50
 }
 
 // OneGrab is used as a downloader.

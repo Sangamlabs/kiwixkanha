@@ -87,7 +87,7 @@ func init() {
 }
 
 func (d *DirectStreamPlatform) Name() state.PlatformName { return PlatformDirectStream }
-func (d *DirectStreamPlatform) Priority() int            { return 65 }
+func (d *DirectStreamPlatform) Priority() int            { return 50 }
 
 func (d *DirectStreamPlatform) CanGet(query string) bool {
 	if _, err := sanitizeMediaURL(query); err != nil {

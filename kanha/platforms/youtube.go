@@ -66,7 +66,7 @@ func init() {
 }
 
 func (p *YouTubePlatform) Name() state.PlatformName { return PlatformYouTube }
-func (p *YouTubePlatform) Priority() int            { return 90 }
+func (p *YouTubePlatform) Priority() int            { return 50 }
 
 func (p *YouTubePlatform) CanGet(query string) bool {
 	return youtubeLinkRe.MatchString(query)

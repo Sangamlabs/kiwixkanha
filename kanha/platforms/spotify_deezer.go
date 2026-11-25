@@ -29,7 +29,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -37,103 +36,6 @@ import (
 
 	td "github.com/Kanha/Meow"
 )
-
-const (
-	audioDownloadTimeout = 300 * time.Second
-	videoDownloadTimeout = 600 * time.Second
-
-	minValidDownloadBytes = 10_000
-)
-
-const PlatformMeowApi state.PlatformName = "MeowApi"
-
-type MeowApiPlatform struct{}
-
-func init() {
-	Register(&MeowApiPlatform{})
-}
-
-func (m *MeowApiPlatform) Name() state.PlatformName { return PlatformMeowApi }
-func (m *MeowApiPlatform) Priority() int            { return 85 }
-
-func (m *MeowApiPlatform) CanGet(_ string) bool { return false }
-
-func (m *MeowApiPlatform) Get(_ string, _ bool) ([]*state.Track, error) {
-	return nil, errors.New("meowapi platform does not support search")
-}
-
-func (m *MeowApiPlatform) CanDownload(source state.PlatformName) bool {
-	if config.MeowAPIURL == "" || config.MeowAPIKey == "" {
-		return false
-	}
-	return source == PlatformYouTube || source == PlatformSpotify || source == PlatformDeezer
-}
-
-func (m *MeowApiPlatform) Download(
-	ctx context.Context,
-	track *state.Track,
-	_ *td.Message,
-) (string, error) {
-	if p := findFile(track); p != "" {
-		logger.Debug("MeowApi: cache hit " + p)
-		return p, nil
-	}
-
-	if track.ID == "" {
-		return "", errors.New("meowapi: missing video id")
-	}
-
-	dtype, quality, ext, timeout := "audio", "128", ".mp3", audioDownloadTimeout
-	if track.Video {
-		dtype, quality, ext, timeout = "video", "480", ".mp4", videoDownloadTimeout
-	}
-
-	dctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	path := getPath(track, ext)
-
-	streamURL := fmt.Sprintf(
-		"%s/stream/%s?key=%s&type=%s&quality=%s",
-		config.MeowAPIURL, track.ID, config.MeowAPIKey, dtype, quality,
-	)
-	switch track.Source {
-	case PlatformSpotify:
-		streamURL = fmt.Sprintf("%s/stream/spotify/%s?key=%s", config.MeowAPIURL, track.ID, config.MeowAPIKey)
-	case PlatformDeezer:
-		streamURL = fmt.Sprintf("%s/stream/deezer/%s?key=%s", config.MeowAPIURL, track.ID, config.MeowAPIKey)
-	}
-
-	r, err := rc.R().
-		SetContext(dctx).
-		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36").
-		SetResponseSaveFileName(path).
-		Get(streamURL)
-	if err != nil {
-		os.Remove(path)
-		if isDownloadCancelled(err) {
-			return "", err
-		}
-		return "", sanitizeAPIError(
-			fmt.Errorf("meowapi request failed: %w", err),
-			config.MeowAPIKey,
-		)
-	}
-	if r.IsStatusFailure() {
-		os.Remove(path)
-		return "", sanitizeAPIError(fmt.Errorf(
-			"meowapi returned %d", r.StatusCode(),
-		), config.MeowAPIKey)
-	}
-
-	info, statErr := os.Stat(path)
-	if statErr != nil || info.Size() < minValidDownloadBytes {
-		os.Remove(path)
-		return "", errors.New("meowapi returned an invalid or empty file")
-	}
-
-	return path, nil
-}
 
 const (
 	PlatformSpotify state.PlatformName = "Spotify"
@@ -161,7 +63,7 @@ func init() {
 }
 
 func (s *SpotifyPlatform) Name() state.PlatformName { return PlatformSpotify }
-func (s *SpotifyPlatform) Priority() int            { return 80 }
+func (s *SpotifyPlatform) Priority() int            { return 50 }
 
 func (s *SpotifyPlatform) CanGet(query string) bool {
 	q := strings.TrimSpace(query)
@@ -486,7 +388,7 @@ func init() {
 }
 
 func (d *DeezerPlatform) Name() state.PlatformName { return PlatformDeezer }
-func (d *DeezerPlatform) Priority() int            { return 80 }
+func (d *DeezerPlatform) Priority() int            { return 50 }
 
 func (d *DeezerPlatform) CanGet(query string) bool {
 	q := strings.TrimSpace(query)

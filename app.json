@@ -36,13 +36,18 @@
             "value": "",
             "required": true
         },
-        "MEOW_API_URL": {
-            "description": "Base URL for the Meow/Yuki Music Streaming API.",
+        "YUKI_API_URL": {
+            "description": "Primary Base URL for the Yuki Music Streaming API.",
             "value": "https://music.yukiapi.site",
             "required": false
         },
-        "MEOW_API_KEY": {
-            "description": "API Key for the Meow/Yuki Music Streaming API.",
+        "YUKI_BACKUP_API_URL": {
+            "description": "Backup Base URL for the Yuki Music Streaming API failover.",
+            "value": "https://play.yukiapi.site",
+            "required": false
+        },
+        "YUKI_API_KEY": {
+            "description": "API Key for the Yuki Music Streaming API.",
             "value": "",
             "required": false
         },
